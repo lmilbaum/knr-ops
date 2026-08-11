@@ -1,27 +1,48 @@
 # knr-ops
 ## kubernetes-native resource operations
 
-### What is knr-ops?
-A method of using Kubernetes-native resources to manage cloud-infrastucture and workloads all from a monorepo using Flux CD for GitOps. The idea here is that IaC doesn't have to be complicated, use DSLs, or require expensive tools. The repository here is an example of exactly that.
+A GitOps pattern for managing cloud infrastructure through the Kubernetes API —
+no Terraform, no DSLs, no state files, no second toolchain. This repository is
+a working reference implementation of that pattern on AWS. **It is not a
+product**: fork it, strip it down, and adapt the layout to your own cloud and
+clusters.
 
-After a one-time bootstrap, everything is declared in Git as yaml.
-
-1 CAPI Cluster creates: 2 Clusters, 4 Node Pools, 2 Regions, 2 S3 buckets, 2 RDS instances, 1 User, 1 Role
-
-0 HCL, 0 statefiles, just pure yaml and GitOps.
-
-Starts with a local [kind](https://kind.sigs.k8s.io/) cluster that bootstraps
+A local [kind](https://kind.sigs.k8s.io/) cluster bootstraps
 [Flux](https://fluxcd.io/), which then reconciles everything else from this
 repository:
-- AWS EKS workload clusters provisioned via
-[CAPA](https://cluster-api-aws.sigs.k8s.io/)
-- per-cluster Flux instances delivered through CAPI addons
-- application workloads (the [ACK](https://aws-controllers-k8s.github.io/docs/) S3, RDS, and IAM operators managing secure S3 buckets, PostgreSQL instances, and read-only IAM roles) running on each workload cluster.
 
-PRs are reviewed as **rendered** Flux diffs (blast radius, image changes,
-render failures) by an in-cluster
-[konflate](https://github.com/home-operations/konflate) instance — see
-[docs/konflate.md](docs/konflate.md).
+- AWS EKS workload clusters provisioned via
+  [CAPA](https://cluster-api-aws.sigs.k8s.io/)
+- per-cluster Flux instances delivered through CAPI addons
+- application workloads (the [ACK](https://aws-controllers-k8s.github.io/docs/)
+  S3, RDS, and IAM operators managing secure S3 buckets, PostgreSQL instances,
+  and read-only IAM roles) running on each workload cluster
+
+After the one-time bootstrap, **everything is declared in Git as YAML**.
+1 CAPI cluster creates: 2 clusters, 4 node pools, 2 regions, 2 S3 buckets,
+2 RDS instances, 1 user, 1 role. 0 HCL, 0 state files.
+
+## Who this is for
+
+Platform engineers who already run Kubernetes and want to manage their own
+cloud infrastructure with the same API, RBAC, audit trail, and GitOps workflow
+they use for workloads. If you're reaching for Terraform/OpenTofu, Pulumi, or
+Crossplane to stand up cloud resources for Kubernetes, this pattern is the
+alternative: the cluster you already operate becomes the control plane. It is
+not a developer self-service portal — you are the consumer.
+
+## Problems the pattern solves
+
+- **State files** — drift, locking, corruption. Controllers reconcile actual
+  state continuously instead of diffing a snapshot.
+- **The plan/apply gap** — PRs are reviewed as **rendered** Flux diffs (blast
+  radius, image changes, render failures) by an in-cluster
+  [konflate](https://github.com/home-operations/konflate) instance: you review
+  byte-for-byte what reconciles. See [docs/konflate.md](docs/konflate.md).
+- **Two toolchains** — HCL for infra, YAML for workloads. One control plane
+  means RBAC, policy, and audit cover both.
+- **Lifecycle split** — Terraform builds the cluster but can't manage what's
+  in it. CAPI + Flux is one dependency graph from cluster to workload.
 
 ## Prerequisites
 
