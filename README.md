@@ -63,6 +63,13 @@ mise run validate           # build every kustomize overlay (mirrors CI)
 mise run teardown           # full teardown (EKS, AWS resources, kind)
 ```
 
+### Mise profiles
+
+The shared toolchain is defined in `mise.toml`. AWS-specific tools are layered
+through `mise.aws.toml`; use the `aws` profile when those tools are needed.
+The `mac` profile is still work in progress and currently only identifies the
+profile without performing any additional action.
+
 ## Documentation
 
 | Page | Contents |
