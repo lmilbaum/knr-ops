@@ -1,0 +1,3 @@
+[tools]
+aws-cli = "latest"
+clusterawsadm = { version = "2.13.0", binary = "clusterawsadm" }

@@ -1,0 +1,3 @@
+[tasks.profile]
+description = "Identify the mac profile without performing any action"
+run = "echo mac"
