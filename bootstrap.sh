@@ -4,83 +4,105 @@
 set -euo pipefail
 
 PROFILE="${KNR_OPS_PROFILE:-${1:-aws}}"
-case "$PROFILE" in
-  local-host|aws) ;;
-  *)
-    echo "ERROR: unsupported profile '$PROFILE' (expected 'local-host' or 'aws')" >&2
-    exit 1
-    ;;
-esac
+GIT_BRANCH="main"
 
-# ── Prerequisites check ───────────────────────────────────────────────────────
-for cmd in kind helm kubectl; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd not found in PATH"; exit 1; }
-done
+preflight_checks() {
+  case "$PROFILE" in
+    local-host|aws) ;;
+    *)
+      echo "ERROR: unsupported profile '$PROFILE' (expected 'local-host' or 'aws')" >&2
+      exit 1
+      ;;
+  esac
 
-if [ "$PROFILE" = aws ]; then
-  : "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (a PAT with read access to the repo)}"
-  : "${GIT_REPO_URL:?GIT_REPO_URL must be set}"
+  for cmd in curl kind helm kubectl; do
+    command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd not found in PATH"; exit 1; }
+  done
 
-  # GITHUB_USER is only used as the basic-auth username; any non-empty value
-  # works with a GitHub PAT, so default to "git".
-  GITHUB_USER="${GITHUB_USER:-git}"
+  if [ "$PROFILE" = aws ]; then
+    : "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (a PAT with read access to the repo)}"
+    : "${GIT_REPO_URL:?GIT_REPO_URL must be set}"
+    GITHUB_USER="${GITHUB_USER:-git}"
 
-  # ── SOPS age key ────────────────────────────────────────────────────────────
-  # Flux decrypts SOPS-encrypted secrets in Git (e.g. the CAPA AWS credentials)
-  # using an age private key loaded into the cluster as the `sops-age` secret.
-  # AGE_KEY_FILE defaults to ./age.agekey (gitignored).
-  AGE_KEY_FILE="${AGE_KEY_FILE:-age.agekey}"
-  if [ ! -f "$AGE_KEY_FILE" ]; then
-    echo "ERROR: age key file not found at '$AGE_KEY_FILE'." >&2
-    echo "       Generate one with:  mise run sops-keygen" >&2
-    echo "       and add its PUBLIC key to .sops.yaml. See docs/secrets.md." >&2
-    exit 1
+    case "$GIT_REPO_URL" in
+      https://github.com/*/*) ;;
+      *)
+        echo "ERROR: GIT_REPO_URL must be an HTTPS GitHub repository URL" >&2
+        exit 1
+        ;;
+    esac
+    GITHUB_REPO="${GIT_REPO_URL#https://github.com/}"
+    GITHUB_REPO="${GITHUB_REPO%/}"
+    GITHUB_REPO="${GITHUB_REPO%.git}"
+    GITHUB_AUTH="Authorization: Bearer ${GITHUB_TOKEN}"
+    github_branch_path="${GIT_BRANCH//\//%2F}"
+    github_branch_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+      -H 'Accept: application/vnd.github+json' \
+      -H "${GITHUB_AUTH}" \
+      "https://api.github.com/repos/${GITHUB_REPO}/branches/${github_branch_path}" || true)"
+    if [ "$github_branch_status" != 200 ]; then
+      echo "ERROR: GitHub repository or branch '${GIT_BRANCH}' is unavailable at '${GIT_REPO_URL}' (HTTP ${github_branch_status})" >&2
+      exit 1
+    fi
+
+    AGE_KEY_FILE="${AGE_KEY_FILE:-age.agekey}"
+    if [ ! -f "$AGE_KEY_FILE" ]; then
+      echo "ERROR: age key file not found at '$AGE_KEY_FILE'." >&2
+      echo "       Generate one with:  mise run sops-keygen" >&2
+      echo "       and add its PUBLIC key to .sops.yaml. See docs/secrets.md." >&2
+      exit 1
+    fi
+    AGE_PUBKEY="${AGE_PUBLIC_KEY:-$(grep '^# public key:' "${AGE_KEY_FILE}" 2>/dev/null | sed 's/^# public key: //')}"
+    if [ -z "$AGE_PUBKEY" ]; then
+      echo "ERROR: Cannot determine age public key from '${AGE_KEY_FILE}' or from AGE_PUBLIC_KEY env var." >&2
+      echo "       Set AGE_PUBLIC_KEY in .env, or regenerate the key with: mise run sops-keygen" >&2
+      exit 1
+    fi
+    AGE_CONTENT=$(cat "${AGE_KEY_FILE}")
+    if ! echo "$AGE_CONTENT" | grep -q '^# created:' 2>/dev/null || ! echo "$AGE_CONTENT" | grep -q '^AGE-SECRET-KEY-' 2>/dev/null; then
+      echo "ERROR: '${AGE_KEY_FILE}' does not appear to be a valid age key file." >&2
+      exit 1
+    fi
   fi
-fi
 
-# ── Prerequisite: container engine (Docker or Podman) ────────────────────────
-# CONTAINER_ENGINE may be set to "docker" or "podman" to skip auto-detection.
-if [ -z "${CONTAINER_ENGINE:-}" ]; then
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    # The podman-docker shim makes `docker` an alias for podman — detect that.
-    if docker --version 2>/dev/null | grep -qi podman; then
+  if [ -z "${CONTAINER_ENGINE:-}" ]; then
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      if docker --version 2>/dev/null | grep -qi podman; then
+        CONTAINER_ENGINE=podman
+      else
+        CONTAINER_ENGINE=docker
+      fi
+    elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
       CONTAINER_ENGINE=podman
     else
-      CONTAINER_ENGINE=docker
+      echo "ERROR: No running container engine found (tried docker and podman)" >&2
+      exit 1
     fi
-  elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
-    CONTAINER_ENGINE=podman
-  else
-    echo "ERROR: No running container engine found (tried docker and podman)" >&2
-    exit 1
   fi
-fi
 
-case "$CONTAINER_ENGINE" in
-  docker)
-    docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon not running" >&2; exit 1; }
-    # Mounted into the kind node so in-cluster tooling (e.g. CAPD) can drive
-    # the host container engine through the Docker API.
-    ENGINE_SOCK="/var/run/docker.sock"
-    ;;
-  podman)
-    podman info >/dev/null 2>&1 || { echo "ERROR: Podman is not running (is 'podman machine' started?)" >&2; exit 1; }
-    # kind's podman support is behind an explicit opt-in flag.
-    export KIND_EXPERIMENTAL_PROVIDER=podman
-    # Ask podman where its API socket lives (on macOS this is the path inside
-    # the podman machine VM, which is what kind's extraMounts resolve against).
-    ENGINE_SOCK="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
-    ENGINE_SOCK="${ENGINE_SOCK#unix://}"
-    if [ -z "$ENGINE_SOCK" ]; then
-      ENGINE_SOCK="/run/podman/podman.sock"
-      echo ">>> WARNING: Could not detect the podman API socket path; assuming ${ENGINE_SOCK}" >&2
-    fi
-    ;;
-  *)
-    echo "ERROR: Unsupported CONTAINER_ENGINE '${CONTAINER_ENGINE}' (expected 'docker' or 'podman')" >&2
-    exit 1
-    ;;
-esac
+  case "$CONTAINER_ENGINE" in
+    docker)
+      docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon not running" >&2; exit 1; }
+      ENGINE_SOCK="/var/run/docker.sock"
+      ;;
+    podman)
+      podman info >/dev/null 2>&1 || { echo "ERROR: Podman is not running (is 'podman machine' started?)" >&2; exit 1; }
+      export KIND_EXPERIMENTAL_PROVIDER=podman
+      ENGINE_SOCK="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+      ENGINE_SOCK="${ENGINE_SOCK#unix://}"
+      if [ -z "$ENGINE_SOCK" ]; then
+        ENGINE_SOCK="/run/podman/podman.sock"
+        echo ">>> WARNING: Could not detect the podman API socket path; assuming ${ENGINE_SOCK}" >&2
+      fi
+      ;;
+    *)
+      echo "ERROR: Unsupported CONTAINER_ENGINE '${CONTAINER_ENGINE}' (expected 'docker' or 'podman')" >&2
+      exit 1
+      ;;
+  esac
+}
+
+preflight_checks
 echo ">>> Using container engine: ${CONTAINER_ENGINE} (socket: ${ENGINE_SOCK})"
 
 # ── Step 1: Create the kind management cluster ────────────────────────────────
