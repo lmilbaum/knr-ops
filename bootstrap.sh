@@ -22,6 +22,7 @@ preflight_checks() {
   if [ "$PROFILE" = aws ]; then
     : "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (a PAT with read access to the repo)}"
     : "${GIT_REPO_URL:?GIT_REPO_URL must be set}"
+    # GITHUB_USER is used in the Flux GitHub secret for repo clone authentication
     GITHUB_USER="${GITHUB_USER:-git}"
 
     case "$GIT_REPO_URL" in
@@ -59,12 +60,20 @@ preflight_checks() {
       exit 1
     fi
     AGE_CONTENT=$(cat "${AGE_KEY_FILE}")
-    if ! echo "$AGE_CONTENT" | grep -q '^# created:' 2>/dev/null || ! echo "$AGE_CONTENT" | grep -q '^AGE-SECRET-KEY-' 2>/dev/null; then
+    if ! echo "$AGE_CONTENT" | grep -q '^# created:' 2>/dev/null; then
       echo "ERROR: '${AGE_KEY_FILE}' does not appear to be a valid age key file." >&2
+      echo "       Expected a file with '# created:' comment header" >&2
+      exit 1
+    fi
+    if ! echo "$AGE_CONTENT" | grep -q '^AGE-SECRET-KEY-' 2>/dev/null; then
+      echo "ERROR: '${AGE_KEY_FILE}' does not appear to contain an age private key." >&2
+      echo "       Expected a line starting with 'AGE-SECRET-KEY-'" >&2
       exit 1
     fi
   fi
 
+  # Detect and select a running container engine. Note: when using podman via the docker CLI
+  # shim (e.g., on macOS), `docker --version` reports podman; we check for that case first.
   if [ -z "${CONTAINER_ENGINE:-}" ]; then
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
       if docker --version 2>/dev/null | grep -qi podman; then
@@ -112,9 +121,10 @@ if kind get clusters 2>/dev/null | grep -q "^mgmt$"; then
   echo ">>> Cluster 'mgmt' already exists – recreating..."
   kind delete cluster --name mgmt
 fi
-# The engine socket is mounted at the Docker socket path inside the node, so
-# consumers always find a Docker-compatible API at /var/run/docker.sock
-# (podman serves the Docker-compatible API on its own socket).
+# Mount the host's container engine socket into the kind node at the standard Docker
+# socket path. This ensures all in-cluster components can access a Docker-compatible API
+# at /var/run/docker.sock, whether the backend is Docker or Podman (which exposes a
+# Docker-compatible socket). This is essential for building and loading container images.
 kind create cluster --name mgmt --config - <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -158,28 +168,10 @@ if [ "$PROFILE" = aws ]; then
 # (such as the CAPA AWS credentials) during reconciliation. Flux scans the
 # Secret for keys matching the pattern `keys.<public-key>.agekey` — each
 # matching key is passed to the age library for decryption.
-# AGE_PUBLIC_KEY can be overridden via .env to match a specific .sops.yaml.
+# Note: the age key file and public key are already validated in preflight_checks.
 echo ">>> Creating sops-age decryption secret in flux-system..."
 # Remove any existing sops-age secret to avoid stale keys from previous bootstrap runs
 kubectl delete secret sops-age -n flux-system --ignore-not-found
-AGE_PUBKEY="${AGE_PUBLIC_KEY:-$(grep '^# public key:' "${AGE_KEY_FILE}" 2>/dev/null | sed 's/^# public key: //')}"
-if [ -z "$AGE_PUBKEY" ]; then
-  echo "ERROR: Cannot determine age public key from '${AGE_KEY_FILE}' or from AGE_PUBLIC_KEY env var." >&2
-  echo "       Set AGE_PUBLIC_KEY in .env, or regenerate the key with: mise run sops-keygen" >&2
-  exit 1
-fi
-# Validate that the file contains an age private key (must have comment header + key data)
-AGE_CONTENT=$(cat "${AGE_KEY_FILE}")
-if ! echo "$AGE_CONTENT" | grep -q '^# created:' 2>/dev/null; then
-  echo "ERROR: '${AGE_KEY_FILE}' does not appear to be a valid age key file."
-  echo "       Expected a file with '# created:' comment header" >&2
-  exit 1
-fi
-if ! echo "$AGE_CONTENT" | grep -q '^AGE-SECRET-KEY-' 2>/dev/null; then
-  echo "ERROR: '${AGE_KEY_FILE}' does not appear to contain an age private key."
-  echo "       Expected a line starting with 'AGE-SECRET-KEY-'" >&2
-  exit 1
-fi
 kubectl create secret generic sops-age \
   --namespace flux-system \
   --from-file="keys.${AGE_PUBKEY}.agekey=${AGE_KEY_FILE}" \
