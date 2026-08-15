@@ -4,7 +4,6 @@
 .aws/
 .copier-answers.yml
 .DS_Store
-.vscode/settings.json
 
 # Secrets — never commit these
 *.pem
