@@ -12,9 +12,16 @@ age = "latest"
 env_file = ".env"
 
 [tasks.validate]
-description = "Build every kustomize overlay to catch structural/reference errors"
+description = "Check shell scripts and build every kustomize overlay"
 run = '''
 fail=0
+for script in bootstrap.sh teardown.sh; do
+  echo "==> bash -n $script"
+  if ! bash -n "$script"; then
+    echo "    FAILED: $script" >&2
+    fail=1
+  fi
+done
 for dir in $(find mgmt workload -name kustomization.yaml -exec dirname {} \; | sort -u); do
   echo "==> kustomize build $dir"
   if ! kubectl kustomize "$dir" >/dev/null; then

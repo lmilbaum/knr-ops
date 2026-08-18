@@ -271,12 +271,21 @@ else
     --set-json 'instance.kustomize.patches=[{"patch":"- op: add\n  path: /spec/insecure\n  value: true","target":{"kind":"OCIRepository"}}]'
   )
 fi
+# Helm 4's watcher strategy treats the FluxInstance's transient InProgress
+# condition as a terminal failure. Use the legacy chart-resource wait here,
+# then wait explicitly for the operator-owned Ready condition below.
 helm upgrade --install flux \
   oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance \
   --namespace flux-system \
-  --wait \
+  --wait=legacy \
   --timeout 10m \
   "${FLUX_INSTANCE_ARGS[@]}"
+
+echo ">>> Waiting for FluxInstance reconciliation to complete..."
+kubectl wait fluxinstance/flux \
+  --namespace flux-system \
+  --for=condition=Ready \
+  --timeout=10m
 
 # ── Post-bootstrap health check ───────────────────────────────────────────────
 # Verify the Flux controllers are running before declaring success.
