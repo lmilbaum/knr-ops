@@ -14,3 +14,8 @@ age.agekey
 
 # Generated local Cluster API workload kubeconfig
 local-workload.kubeconfig
+airgap/archives/
+airgap/rendered/
+airgap/sbom/
+airgap/config-artifact/
+airgap/*.tar.zst
