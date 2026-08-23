@@ -19,13 +19,22 @@ resources. There is no app source code here, only declarative infrastructure.
     (HelmChartProxy + ClusterResourceSets).
   - `clusters/`: EKS cluster definitions per region (`eu-north-1`,
     `eu-west-1`).
+- `mgmt/local-host/`: the local-host management variant (kind-based).
+  Same layout as `mgmt/aws/` (`clusters/docker`, `capi-providers/`,
+  `addons/`, `infrastructure/`) with no cloud dependencies.
 - `workload/`: synced by each WORKLOAD cluster's Flux.
   - `base/`: ACK controllers and S3/RDS/IAM custom resources.
   - `<region>-01/`: per-cluster overlays pointing at `../base`.
+- `airgap/`: Zarf offline install kit for the local-host profile.
+  `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
+  renders, and stages the kit (`build-*`, `render-*`, `stage-*`,
+  `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs.
 - `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
   kind + Flux bootstrap, full teardown).
 - `docs/`: detailed documentation (see the table in README.md).
 - `mise.toml`: pinned tool versions and all task entrypoints.
+  `mise.aws.toml` is the AWS tool layer (aws-cli, clusterawsadm),
+  activated with `MISE_ENV=aws`.
 
 ## The golden rules (read before changing anything)
 
@@ -40,6 +49,16 @@ resources. There is no app source code here, only declarative infrastructure.
 4. Run `mise run validate` before pushing. PRs are reviewed as rendered Flux
    diffs by the konflate GitHub Actions workflow (backed by an in-cluster
    instance), so what you push is what gets reviewed.
+
+## Keeping this file current
+
+When making changes that affect repository structure, architecture,
+development workflows, build or test procedures, deployment workflows, or
+other information used to navigate and understand the repository, update
+`AGENTS.md` as part of the same pull request.
+
+Do not update `AGENTS.md` for changes that do not affect repository
+understanding or agent workflows.
 
 ## App layout convention
 
@@ -80,3 +99,4 @@ Load these only when the task touches their domain:
 - `docs/aws-iam.md`: EKS Pod Identity, ACK controller roles, reader user.
 - `docs/operations.md`: quotas, configuration, bootstrap, verification.
 - `docs/workload-resources.md`: S3/RDS posture, known limitations.
+- `docs/airgap.md`: Zarf offline kit for the local-host profile.
