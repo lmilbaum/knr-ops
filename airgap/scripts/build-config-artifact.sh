@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # build-config-artifact.sh — build the airgap-trimmed knr-ops config tree and
-# push it to the connected-side local registry, ready to be baked into the
+# push it to the connected-side OCI registry, ready to be baked into the
 # Zarf package (zarf.yaml lists it under the knr-ops-config component images).
 #
-# Connected-side only. Requires: flux CLI, local registry on localhost:5001
-# (the knr-registry container from `mise -E local-host run bootstrap`).
+# Connected-side only. Requires: flux CLI and an OCI registry. By default it
+# uses the knr-registry container from `mise -E local-host run bootstrap`.
 #
 # Why a trimmed tree: in the gap the substrate (cert-manager, CAPI, CAAPH,
 # flux-operator) is deployed by Zarf, and the capi-operator HelmRelease /
@@ -20,7 +20,8 @@ cd "$REPO_ROOT"
 REGISTRY_PORT="${REGISTRY_PORT:-5001}"
 OCI_REPOSITORY="${OCI_REPOSITORY:-knr-ops-airgap}"
 OCI_TAG="${OCI_TAG:-latest}"
-OCI_URL="oci://localhost:${REGISTRY_PORT}/${OCI_REPOSITORY}:${OCI_TAG}"
+OCI_REGISTRY="${OCI_REGISTRY:-localhost:${REGISTRY_PORT}}"
+OCI_URL="oci://${OCI_REGISTRY}/${OCI_REPOSITORY}:${OCI_TAG}"
 
 ARTIFACT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/knr-ops-airgap-oci.XXXXXX")
 cleanup() { rm -rf "$ARTIFACT_ROOT"; }
@@ -314,12 +315,20 @@ SOURCE_URL=$(git config --get remote.origin.url || true)
 SOURCE_URL="${SOURCE_URL:-file://${REPO_ROOT}}"
 
 echo "==> Pushing airgap config artifact ${OCI_URL}"
-flux push artifact "$OCI_URL" \
-  --path="$ARTIFACT_ROOT" \
-  --source="$SOURCE_URL" \
-  --revision="${GIT_REF}@sha1:${GIT_SHA}" \
-  --insecure-registry \
+PUSH_ARGS=(
+  "$OCI_URL"
+  --path="$ARTIFACT_ROOT"
+  --source="$SOURCE_URL"
+  --revision="${GIT_REF}@sha1:${GIT_SHA}"
   --reproducible
+)
+if [[ "$OCI_REGISTRY" == localhost:* ]]; then
+  PUSH_ARGS+=(--insecure-registry)
+fi
+if [ -n "${OCI_USERNAME:-}" ] && [ -n "${OCI_PASSWORD:-}" ]; then
+  PUSH_ARGS+=(--creds "${OCI_USERNAME}:${OCI_PASSWORD}")
+fi
+flux push artifact "${PUSH_ARGS[@]}"
 
 # Keep a plain-directory copy of the tree in the kit: the gap-side stage
 # script re-pushes it into knr-registry as knr-ops:latest for the workload
@@ -328,4 +337,4 @@ rm -rf "$REPO_ROOT/airgap/config-artifact"
 cp -R "$ARTIFACT_ROOT" "$REPO_ROOT/airgap/config-artifact"
 echo "==> Kit copy at airgap/config-artifact/ ($(du -sh "$REPO_ROOT/airgap/config-artifact" | cut -f1))"
 
-echo "==> Done. zarf.yaml's knr-ops-config component references localhost:${REGISTRY_PORT}/${OCI_REPOSITORY}:${OCI_TAG}"
+echo "==> Done. Config artifact: ${OCI_REGISTRY}/${OCI_REPOSITORY}:${OCI_TAG}"
