@@ -24,6 +24,12 @@ ARCHIVES="$AIRGAP_DIR/archives"
 
 CLUSTER_NAME="${CLUSTER_NAME:-mgmt}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.36.1}"
+DOCKER_SOCKET_PATH="${DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
+
+if [ ! -S "$DOCKER_SOCKET_PATH" ]; then
+  echo "ERROR: Docker socket does not exist: ${DOCKER_SOCKET_PATH}" >&2
+  exit 1
+fi
 
 echo ">>> Loading image archives into the host Docker daemon..."
 for tar in "$ARCHIVES"/*.tar; do
@@ -41,7 +47,7 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
     extraMounts:
-      - hostPath: /var/run/docker.sock
+      - hostPath: ${DOCKER_SOCKET_PATH}
         containerPath: /var/run/docker.sock
 EOF
 fi
