@@ -27,13 +27,14 @@ if [ ! -f "$PACKAGE" ]; then
   exit 1
 fi
 
-# Direct binary paths (offline-safe; no mise/network resolution).
-ZARF="$HOME/.local/share/mise/installs/github-zarf-dev-zarf/v0.83.0/zarf"
-FLUX=/opt/homebrew/bin/flux
-HELM=/opt/homebrew/bin/helm
-KIND=/opt/homebrew/bin/kind
-KUBECTL=/usr/local/bin/kubectl
-DOCKER=/usr/local/bin/docker
+# Resolve the already-installed tools before going offline. This supports both
+# the macOS operator workflow and Linux CI without invoking mise in the gap.
+ZARF=$(command -v zarf)
+FLUX=$(command -v flux)
+HELM=$(command -v helm)
+KIND=$(command -v kind)
+KUBECTL=$(command -v kubectl)
+DOCKER=$(command -v docker)
 export KUBECONFIG="$HOME/.kube/config"
 
 export CLUSTER_NAME=airgap-mgmt
