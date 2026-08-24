@@ -18,7 +18,7 @@
   <rect width="1600" height="1150" fill="#0f0f0f"/>
 
   <!-- ===== title block ===== -->
-  <text x="800" y="60" text-anchor="middle" font-family="DejaVu Sans" font-size="40" font-weight="bold" fill="#ff78c9">knr-ops &#183; Zarf Air-Gap Kit &#183; Radio Off, Chain Intact</text>
+  <text x="800" y="60" text-anchor="middle" font-family="DejaVu Sans" font-size="40" font-weight="bold" fill="#ff78c9">knr-ops &#183; Zarf Air-Gap Bundle &#183; Radio Off, Chain Intact</text>
   <text x="800" y="96" text-anchor="middle" font-family="DejaVu Sans" font-size="19" fill="#8f8f8f">Zarf packages the local-host profile &#183; build connected, deploy with no internet &#183; two registries, one package</text>
 
   <!-- ===== section headers ===== -->
@@ -37,10 +37,10 @@
   <text x="100" y="352" font-family="DejaVu Sans Mono" font-size="16" fill="#85c7bb">&#8226; zarf package create</text>
   <text x="284" y="388" text-anchor="middle" font-family="DejaVu Sans" font-size="14.5" fill="#8f8f8f">git tree is never modified; airgap variant generated at build</text>
 
-  <!-- ===== the kit ===== -->
+  <!-- ===== the bundle ===== -->
   <rect x="620" y="150" width="400" height="256" rx="14" fill="#131320" stroke="#3d3d55" stroke-width="1.5"/>
   <rect x="636" y="158" width="368" height="5" rx="2.5" fill="#ab9fd6"/>
-  <text x="820" y="198" text-anchor="middle" font-family="DejaVu Sans" font-size="25" font-weight="bold" fill="#ab9fd6">The Kit</text>
+  <text x="820" y="198" text-anchor="middle" font-family="DejaVu Sans" font-size="25" font-weight="bold" fill="#ab9fd6">The Bundle</text>
   <text x="820" y="222" text-anchor="middle" font-family="DejaVu Sans" font-size="16" fill="#8f8f8f">(what crosses the gap)</text>
   <text x="656" y="258" font-family="DejaVu Sans Mono" font-size="15" fill="#d6d6d6">zarf-package-knr-ops-airgap-*.tar.zst</text>
   <text x="656" y="286" font-family="DejaVu Sans Mono" font-size="15" fill="#d6d6d6">zarf-init tarball + zarf CLI</text>
@@ -48,7 +48,7 @@
   <text x="656" y="342" font-family="DejaVu Sans Mono" font-size="15" fill="#d6d6d6">charts/*.tgz <tspan font-family="DejaVu Sans" fill="#8f8f8f">(flux-operator, podinfo)</tspan></text>
   <text x="656" y="370" font-family="DejaVu Sans Mono" font-size="15" fill="#d6d6d6">config-artifact/ <tspan font-family="DejaVu Sans" fill="#8f8f8f">&#8594; knr-ops:latest</tspan></text>
 
-  <!-- build -> kit arrow -->
+  <!-- build -> bundle arrow -->
   <line x1="508" y1="278" x2="612" y2="278" stroke="#85c7bb" stroke-width="2.5" marker-end="url(#arrow-teal)"/>
   <text x="561" y="258" text-anchor="middle" font-family="DejaVu Sans" font-size="16" font-weight="bold" fill="#fafafa">1. build</text>
 
@@ -138,7 +138,7 @@
   <!-- step 2 -->
   <circle cx="1140" cy="338" r="15" fill="#ab9fd6"/>
   <text x="1140" y="344" text-anchor="middle" font-family="DejaVu Sans" font-size="15" font-weight="bold" fill="#0f0f0f">2</text>
-  <text x="1168" y="334" font-family="DejaVu Sans" font-size="17" fill="#d6d6d6">The kit crosses the gap. Offline:</text>
+  <text x="1168" y="334" font-family="DejaVu Sans" font-size="17" fill="#d6d6d6">The bundle crosses the gap. Offline:</text>
   <text x="1168" y="360" font-family="DejaVu Sans Mono" font-size="15.5" fill="#ab9fd6">docker load<tspan font-family="DejaVu Sans" font-size="17" fill="#d6d6d6"> archives, create kind</tspan></text>
   <text x="1168" y="386" font-family="DejaVu Sans" font-size="17" fill="#d6d6d6">mgmt cluster, seed knr-registry.</text>
   <line x1="1122" y1="420" x2="1504" y2="420" stroke="#34344a" stroke-width="1.2"/>

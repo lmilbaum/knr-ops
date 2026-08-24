@@ -330,11 +330,11 @@ if [ -n "${OCI_USERNAME:-}" ] && [ -n "${OCI_PASSWORD:-}" ]; then
 fi
 flux push artifact "${PUSH_ARGS[@]}"
 
-# Keep a plain-directory copy of the tree in the kit: the gap-side stage
+# Keep a plain-directory copy of the tree in the bundle: the gap-side stage
 # script re-pushes it into knr-registry as knr-ops:latest for the workload
 # cluster's Flux (which does not talk to the Zarf registry).
 rm -rf "$REPO_ROOT/airgap/config-artifact"
 cp -R "$ARTIFACT_ROOT" "$REPO_ROOT/airgap/config-artifact"
-echo "==> Kit copy at airgap/config-artifact/ ($(du -sh "$REPO_ROOT/airgap/config-artifact" | cut -f1))"
+echo "==> Bundle copy at airgap/config-artifact/ ($(du -sh "$REPO_ROOT/airgap/config-artifact" | cut -f1))"
 
 echo "==> Done. Config artifact: ${OCI_REGISTRY}/${OCI_REPOSITORY}:${OCI_TAG}"

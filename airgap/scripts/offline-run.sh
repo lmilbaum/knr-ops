@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# offline-run.sh — autonomous Wi-Fi-off validation of the knr-ops airgap kit.
+# offline-run.sh — autonomous Wi-Fi-off validation of the knr-ops airgap bundle.
 #
 # This script is designed to run with NO operator and NO LLM/agent attached:
 # it waits until the internet is unreachable, runs the full deploy, verifies,

@@ -25,9 +25,9 @@ resources. There is no app source code here, only declarative infrastructure.
 - `workload/`: synced by each WORKLOAD cluster's Flux.
   - `base/`: ACK controllers and S3/RDS/IAM custom resources.
   - `<region>-01/`: per-cluster overlays pointing at `../base`.
-- `airgap/`: Zarf offline install kit for the local-host profile.
+- `airgap/`: Zarf offline transfer bundle for the local-host profile.
   `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
-  renders, and stages the kit (`build-*`, `render-*`, `stage-*`,
+  renders, and stages the bundle (`build-*`, `render-*`, `stage-*`,
   `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs. The
   `air-gapped` workflow builds the ARM64 transfer bundle and exercises a
   monitored deployment and an egress-blocked deployment in parallel only on
@@ -104,4 +104,4 @@ Load these only when the task touches their domain:
 - `docs/aws-iam.md`: EKS Pod Identity, ACK controller roles, reader user.
 - `docs/operations.md`: quotas, configuration, bootstrap, verification.
 - `docs/workload-resources.md`: S3/RDS posture, known limitations.
-- `docs/airgap.md`: Zarf offline kit for the local-host profile.
+- `docs/airgap.md`: Zarf offline bundle for the local-host profile.

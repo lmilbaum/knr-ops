@@ -32,7 +32,7 @@ After the one-time bootstrap, **everything is declared in Git as YAML**.
 The `aws` profile declares 2 CAPI workload clusters: 4 node pools (ARM and
 GPU) across 2 regions, 2 S3 buckets, 2 RDS instances, 1 reader user, and one
 reader role per workload cluster. The repository also ships a
-[Zarf](https://zarf.dev/) air-gap kit that packages the `local-host`
+[Zarf](https://zarf.dev/) air-gap bundle that packages the `local-host`
 deployment for offline installs. 0 HCL, 0 state files.
 
 ## Who this is for
@@ -132,7 +132,7 @@ suspends Flux and removes the AWS-managed infrastructure.
 | [docs/secrets.md](docs/secrets.md) | SOPS + age secret management, key setup, credential rotation |
 | [docs/operations.md](docs/operations.md) | Prerequisites, AWS service quotas, configuration, bootstrap, verification, teardown, validation |
 | [docs/extending.md](docs/extending.md) | Adding a workload cluster, adding apps to the workload clusters, adding other providers (Azure, Talos, k0smotron) |
-| [docs/airgap.md](docs/airgap.md) | Zarf air-gap kit: package build, offline deploy, verification checklist, update drill |
+| [docs/airgap.md](docs/airgap.md) | Zarf air-gap bundle: package build, offline deploy, verification checklist, update drill |
 
 ## Repository layout
 
