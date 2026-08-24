@@ -51,10 +51,11 @@ fail() { echo "FAIL: $*" | tee -a "$SUMMARY"; }
 
 : > "$SUMMARY"
 {
-step "0. waiting for Wi-Fi to go OFF (internet unreachable)..."
+step "0. establish offline isolation"
 if [ "${SKIP_OFFLINE_CHECK:-0}" = "1" ]; then
-  echo "offline connectivity check skipped; external traffic is monitored by the caller"
+  echo "isolation mode: caller-monitored (offline connectivity check skipped)"
 else
+  echo "isolation mode: self-checked (waiting for internet to become unreachable)"
   online_deadline=$(( $(date +%s) + ${OFFLINE_WAIT_SECONDS:-900} ))
   while true; do
     if ! curl -s --max-time 3 https://ghcr.io >/dev/null 2>&1 && \

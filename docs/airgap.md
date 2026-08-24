@@ -18,6 +18,11 @@ enforces network isolation and monitors external traffic for the full run; in
 that mode, the result log explicitly records that the connectivity check was
 skipped and caller-monitored.
 
+```sh
+# Caller must enforce isolation and monitor external traffic until completion.
+SKIP_OFFLINE_CHECK=1 airgap/scripts/offline-run.sh
+```
+
 ## Prerequisites
 
 The kit is single-architecture (arm64), including the pinned Zarf CLI. The
