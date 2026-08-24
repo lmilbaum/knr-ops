@@ -30,7 +30,10 @@ resources. There is no app source code here, only declarative infrastructure.
   renders, and stages the kit (`build-*`, `render-*`, `stage-*`,
   `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs. The
   `air-gapped` workflow builds the ARM64 transfer bundle and exercises a
-  monitored deployment only on upstream `main`, nightly or by manual dispatch.
+  monitored deployment and an egress-blocked deployment in parallel only on
+  upstream `main`, nightly or by manual dispatch. Running both is a temporary
+  comparison of validation accuracy and performance; the less effective job
+  will be removed after enough runs are evaluated.
 - `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
   kind + Flux bootstrap, full teardown).
 - `docs/`: detailed documentation (see the table in README.md).
