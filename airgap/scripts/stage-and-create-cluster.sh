@@ -106,7 +106,7 @@ fi
 echo ">>> Seeding ${REGISTRY_NAME} with the config artifact + charts..."
 flux push artifact "oci://localhost:${REGISTRY_PORT}/knr-ops:latest" \
   --path="$AIRGAP_DIR/config-artifact" \
-  --source="airgap-kit" \
+  --source="airgap-bundle" \
   --revision="airgap@sha1:$(git -C "$AIRGAP_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
   --insecure-registry \
   --reproducible

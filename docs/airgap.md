@@ -25,7 +25,7 @@ SKIP_OFFLINE_CHECK=1 airgap/scripts/offline-run.sh
 
 ## Prerequisites
 
-The kit is single-architecture (arm64), including the pinned Zarf CLI. The
+The bundle is single-architecture (arm64), including the pinned Zarf CLI. The
 mise pin in `mise.toml` selects the matching Linux or macOS arm64 release
 asset. Docker and kind are also required on the deploy host (the prototype
 keeps kind as the management-cluster substrate; see Known limitations).
@@ -70,7 +70,7 @@ Zarf package and is published into Zarf's internal registry at deploy time.
 The verification linchpin is the agent's **image rewrite** plus a Ready
 `OCIRepository` pointing at the internal registry, with the radio off.
 
-## What crosses the gap (the kit)
+## What crosses the gap (the bundle)
 
 | Item | Purpose |
 |---|---|
