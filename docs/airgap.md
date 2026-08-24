@@ -97,19 +97,31 @@ airgap/scripts/build-package.sh   # validate, artifact, images, charts, zarf pac
 ```
 
 The `air-gapped` GitHub Actions workflow runs only on upstream `main`, nightly
-or by manual dispatch. It builds the ARM64 bundle, deploys it while capturing
-public traffic, fails if any public packet is observed, and retains the bundle
-and verification evidence as one-day workflow artifacts.
+or by manual dispatch. It builds the ARM64 bundle, then starts two deployment
+jobs in parallel: one observes public traffic without blocking it, while the
+other blocks new external connections from the kind network. Both capture
+public traffic and fail if any public packet is observed or attempted. The
+workflow retains the bundle and verification evidence as one-day artifacts.
+
+Running both deployment jobs is a temporary evaluation, not the intended
+long-term workflow shape. Their results and timings provide comparable samples
+from the same bundle so maintainers can determine which method detects offline
+violations more accurately and whether either has a meaningful performance
+cost. After enough nightly and manual runs have been assessed, the less
+effective job will be removed.
 
 The nightly schedule starts at 02:17 UTC rather than at the top of the hour to
-reduce GitHub Actions queue contention. Build and deploy remain separate jobs
-so CI verifies that the uploaded transfer bundle can be downloaded and used on
-a clean runner. The bundle upload uses compression level 0 because its largest
-contents are already-compressed container layers and Zstandard archives. CI
-also deliberately avoids caching container images: pulling them during every
-run verifies that the declared air-gap inventory remains available and
-complete. Fork and default-branch guards prevent fork or non-default-branch
-manual dispatches from consuming the ARM64 runners.
+reduce GitHub Actions queue contention. Build and deployment remain separate
+jobs so CI verifies that the uploaded transfer bundle can be downloaded and
+used on clean runners. Both deployment jobs depend only on the build job, so
+they run concurrently to make their timing comparison fair and avoid doubling
+elapsed validation time. The bundle upload uses compression level 0 because its
+largest contents are already-compressed container layers and Zstandard
+archives. CI also
+deliberately avoids caching container images: pulling them during every run
+verifies that the declared air-gap inventory remains available and complete.
+Fork and default-branch guards prevent fork or non-default-branch manual
+dispatches from consuming the ARM64 runners.
 
 Gap (deploy) — from `airgap/`:
 
