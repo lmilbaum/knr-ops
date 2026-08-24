@@ -35,8 +35,6 @@ reader role per workload cluster. The repository also ships a
 [Zarf](https://zarf.dev/) air-gap kit that packages the `local-host`
 deployment for offline installs. 0 HCL, 0 state files.
 
-![knr-ops architecture](docs/knr-ops-architecture.svg)
-
 ## Who this is for
 
 Platform engineers who already run Kubernetes and want to manage their own
@@ -58,6 +56,12 @@ not a developer self-service portal; you are the consumer.
   means RBAC, policy, and audit cover both.
 - **Lifecycle split**: Terraform builds the cluster but can't manage what's
   in it. CAPI + Flux is one dependency graph from cluster to workload.
+
+![knr-ops aws architecture](docs/aws-infra.svg)
+
+![knr-ops local-host architecture](docs/local-host-infra.svg)
+
+![knr-ops air-gap architecture](docs/air-gap-infra.svg)
 
 ## Prerequisites
 
