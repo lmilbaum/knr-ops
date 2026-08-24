@@ -59,13 +59,46 @@ kubectl wait --for=condition=Ready node --all --timeout=180s
 # the Zarf internal registry is only reachable inside the mgmt cluster).
 REGISTRY_NAME="${REGISTRY_NAME:-knr-registry}"
 REGISTRY_PORT="${REGISTRY_PORT:-5001}"
+registry_failure() {
+  echo "ERROR: registry '${REGISTRY_NAME}' $*" >&2
+  docker ps -a --filter "name=^${REGISTRY_NAME}$" >&2
+  docker logs "$REGISTRY_NAME" >&2 || true
+  exit 1
+}
+
 if ! docker ps --filter "name=^${REGISTRY_NAME}$" --format '{{.Names}}' | grep -q "$REGISTRY_NAME"; then
   echo ">>> Creating registry container '${REGISTRY_NAME}' (localhost:${REGISTRY_PORT})..."
   docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
-  docker run -d --name "$REGISTRY_NAME" --network kind -p "127.0.0.1:${REGISTRY_PORT}:5000" registry:2 >/dev/null
+  docker run -d --name "$REGISTRY_NAME" --network kind \
+    -p "127.0.0.1:${REGISTRY_PORT}:5000" \
+    --health-cmd='wget --spider --quiet http://localhost:5000/v2/ || exit 1' \
+    --health-interval=1s \
+    --health-timeout=2s \
+    --health-retries=15 \
+    registry:2 >/dev/null
 fi
-curl --fail --silent --retry 10 --retry-connrefused --retry-delay 1 \
-  "http://localhost:${REGISTRY_PORT}/v2/" >/dev/null
+
+registry_health=$(docker inspect --format \
+  '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+  "$REGISTRY_NAME")
+if [ "$registry_health" != "none" ]; then
+  for attempt in $(seq 1 30); do
+    registry_health=$(docker inspect --format '{{.State.Health.Status}}' "$REGISTRY_NAME")
+    [ "$registry_health" = "healthy" ] && break
+    [ "$registry_health" = "unhealthy" ] && break
+    sleep 1
+  done
+  if [ "$registry_health" != "healthy" ]; then
+    registry_failure "health status is ${registry_health}"
+  fi
+fi
+
+# Verify the published host port as well as the in-container health check.
+if ! curl --fail --show-error --silent --connect-timeout 1 --max-time 2 \
+  --retry 15 --retry-all-errors --retry-delay 1 --retry-max-time 30 \
+  "http://localhost:${REGISTRY_PORT}/v2/" >/dev/null; then
+  registry_failure "is not reachable through localhost:${REGISTRY_PORT}"
+fi
 
 # Seed knr-registry: the knr-ops config artifact (workload/local-host syncs
 # from it) and the two OCI charts (flux-operator for the HelmChartProxy,
