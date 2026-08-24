@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # build-package.sh — connected-side package build.
+# Version bumps must update HOST_IMAGES, mise.toml's Zarf pin, stage-and-create-cluster.sh's KIND_NODE_IMAGE, and cluster-class.yaml's customImage together.
 #
 #   1. mise run validate (all overlays still build)
 #   2. build-config-artifact.sh (trimmed airgap tree -> configured OCI registry)
