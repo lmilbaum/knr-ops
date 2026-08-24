@@ -13,6 +13,8 @@
 #   3. watch:  tail -f /tmp/airgap-offline-run.log
 #   4. when the log shows "OFFLINE RUN COMPLETE", toggle Wi-Fi back ON and
 #      tell the agent to collect the results.
+# Set SKIP_OFFLINE_CHECK=1 only when the caller enforces network isolation and
+# monitors external traffic; by default this script waits to confirm isolation.
 set -uo pipefail
 
 LOG=/tmp/airgap-offline-run.log
@@ -50,20 +52,24 @@ fail() { echo "FAIL: $*" | tee -a "$SUMMARY"; }
 : > "$SUMMARY"
 {
 step "0. waiting for Wi-Fi to go OFF (internet unreachable)..."
-online_deadline=$(( $(date +%s) + ${OFFLINE_WAIT_SECONDS:-900} ))
-while true; do
-  if ! curl -s --max-time 3 https://ghcr.io >/dev/null 2>&1 && \
-     ! curl -s --max-time 3 https://registry.k8s.io >/dev/null 2>&1; then
-    echo "internet unreachable -> OFFLINE confirmed"
-    break
-  fi
-  if [ "$(date +%s)" -ge "$online_deadline" ]; then
-    echo "TIMEOUT waiting for Wi-Fi off; aborting."
-    fail "never went offline within ${OFFLINE_WAIT_SECONDS:-900}s"
-    exit 1
-  fi
-  sleep 5
-done
+if [ "${SKIP_OFFLINE_CHECK:-0}" = "1" ]; then
+  echo "offline connectivity check skipped; external traffic is monitored by the caller"
+else
+  online_deadline=$(( $(date +%s) + ${OFFLINE_WAIT_SECONDS:-900} ))
+  while true; do
+    if ! curl -s --max-time 3 https://ghcr.io >/dev/null 2>&1 && \
+       ! curl -s --max-time 3 https://registry.k8s.io >/dev/null 2>&1; then
+      echo "internet unreachable -> OFFLINE confirmed"
+      break
+    fi
+    if [ "$(date +%s)" -ge "$online_deadline" ]; then
+      echo "TIMEOUT waiting for Wi-Fi off; aborting."
+      fail "never went offline within ${OFFLINE_WAIT_SECONDS:-900}s"
+      exit 1
+    fi
+    sleep 5
+  done
+fi
 
 step "1. stage: docker load + kind create + seed registry"
 if CLUSTER_NAME=$CLUSTER_NAME REGISTRY_NAME=$REGISTRY_NAME REGISTRY_PORT=$REGISTRY_PORT \
@@ -164,7 +170,11 @@ if grep -q "^FAIL" "$SUMMARY"; then
   cat "$SUMMARY"
   exit 1
 else
-  echo "RESULT: PASS - full airgap deploy verified with no internet"
+  result_suffix=""
+  if [ "${SKIP_OFFLINE_CHECK:-0}" = "1" ]; then
+    result_suffix=" (connectivity check skipped; caller-monitored)"
+  fi
+  echo "RESULT: PASS - full airgap deploy verified with no internet${result_suffix}"
   cat "$SUMMARY"
   exit 0
 fi

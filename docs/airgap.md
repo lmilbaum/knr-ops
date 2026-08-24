@@ -12,6 +12,12 @@ the autonomous script `scripts/offline-run.sh` with Wi-Fi disabled for the
 full deploy + reconcile window. Re-run that script the same way to
 re-verify.
 
+By default, `offline-run.sh` waits until it confirms that the internet is
+unreachable before deploying. Set `SKIP_OFFLINE_CHECK=1` only when the caller
+enforces network isolation and monitors external traffic for the full run; in
+that mode, the result log explicitly records that the connectivity check was
+skipped and caller-monitored.
+
 ## Prerequisites
 
 The kit is single-architecture (arm64), including the pinned Zarf CLI. The
