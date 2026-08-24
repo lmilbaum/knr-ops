@@ -152,6 +152,14 @@ if [ -n "$port" ]; then
 
   wlf=$("$KUBECTL" --kubeconfig="$WL_KCFG" -n flux-system get ocirepository flux-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  # The workload API can become reachable before its Flux source has been
+  # created and reconciled. Allow that asynchronous handoff to complete.
+  for i in $(seq 1 20); do
+    [ "$wlf" = "True" ] && break
+    sleep 15
+    wlf=$("$KUBECTL" --kubeconfig="$WL_KCFG" -n flux-system get ocirepository flux-system \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  done
   [ "$wlf" = "True" ] && pass "workload Flux sync Ready from knr-registry" || fail "workload Flux sync ready=$wlf"
 
   podinfo=$("$KUBECTL" --kubeconfig="$WL_KCFG" -n podinfo get pods --no-headers 2>/dev/null | grep -c " Running ")

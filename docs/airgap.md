@@ -96,9 +96,20 @@ Connected (build):
 airgap/scripts/build-package.sh   # validate, artifact, images, charts, zarf package create
 ```
 
-The `air-gapped` GitHub Actions workflow runs the same build on ARM64 for
-every pull request and for manual dispatches, then retains the generated
-transfer artifacts as a one-day workflow artifact.
+The `air-gapped` GitHub Actions workflow runs only on upstream `main`, nightly
+or by manual dispatch. It builds the ARM64 bundle, deploys it while capturing
+public traffic, fails if any public packet is observed, and retains the bundle
+and verification evidence as one-day workflow artifacts.
+
+The nightly schedule starts at 02:17 UTC rather than at the top of the hour to
+reduce GitHub Actions queue contention. Build and deploy remain separate jobs
+so CI verifies that the uploaded transfer bundle can be downloaded and used on
+a clean runner. The bundle upload uses compression level 0 because its largest
+contents are already-compressed container layers and Zstandard archives. CI
+also deliberately avoids caching container images: pulling them during every
+run verifies that the declared air-gap inventory remains available and
+complete. Repository and ref guards prevent forks or non-`main` manual
+dispatches from consuming the ARM64 runners.
 
 Gap (deploy) — from `airgap/`:
 
