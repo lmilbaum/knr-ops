@@ -8,6 +8,7 @@
 # Usage (operator):
 #   1. an agent (or you) starts this script in the background while online:
 #        nohup airgap/scripts/offline-run.sh >/dev/null 2>&1 &
+#        nohup airgap/scripts/offline-run.sh /path/to/package.tar.zst >/dev/null 2>&1 &
 #   2. toggle Wi-Fi OFF within 6 minutes.
 #   3. watch:  tail -f /tmp/airgap-offline-run.log
 #   4. when the log shows "OFFLINE RUN COMPLETE", toggle Wi-Fi back ON and
@@ -18,6 +19,13 @@ LOG=/tmp/airgap-offline-run.log
 SUMMARY=/tmp/airgap-offline-summary.txt
 AIRGAP_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCHIVES="$AIRGAP_DIR/archives"
+PACKAGE_INPUT="${1:-$ARCHIVES/zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst}"
+PACKAGE_DIR=$(cd "$(dirname "$PACKAGE_INPUT")" && pwd)
+PACKAGE="$PACKAGE_DIR/$(basename "$PACKAGE_INPUT")"
+if [ ! -f "$PACKAGE" ]; then
+  echo "offline-run.sh: package not found: $PACKAGE" >&2
+  exit 1
+fi
 
 # Direct binary paths (offline-safe; no mise/network resolution).
 ZARF="$HOME/.local/share/mise/installs/github-zarf-dev-zarf/v0.83.0/zarf"
@@ -75,7 +83,7 @@ else
 fi
 
 step "3. zarf package deploy"
-if ( cd "$AIRGAP_DIR" && "$ZARF" package deploy "$ARCHIVES/zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst" --confirm ); then
+if ( cd "$AIRGAP_DIR" && "$ZARF" package deploy "$PACKAGE" --confirm ); then
   pass "zarf package deploy"
 else
   fail "zarf package deploy"
