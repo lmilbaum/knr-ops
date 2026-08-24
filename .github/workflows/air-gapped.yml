@@ -16,7 +16,9 @@ concurrency:
 jobs:
   build:
     name: Build air-gap bundle
-    if: github.repository == 'polarsquad/knr-ops' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event.repository.fork == false &&
+      github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     services:
