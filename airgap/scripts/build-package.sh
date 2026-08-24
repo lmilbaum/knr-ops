@@ -3,9 +3,8 @@
 #
 #   1. mise run validate (all overlays still build)
 #   2. build-config-artifact.sh (trimmed airgap tree -> configured OCI registry)
-#   3. stage workload-node pod images into archives/ (host-daemon tarball for
-#      CAPD preLoadImages; distinct from the mgmt substrate images the Zarf
-#      package pushes into the internal registry)
+#   3. stage the Zarf init package, host-daemon images, workload-node pod
+#      images, and OCI charts into archives/
 #   4. zarf package create
 #
 # Output: zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst next to airgap/.
@@ -50,8 +49,28 @@ if [ -n "${OCI_REGISTRY:-}" ]; then
   echo "    zarf config artifact: ${CONFIG_ARTIFACT}"
 fi
 
-echo "==> 3/4 workload-node pod images + OCI charts"
+echo "==> 3/4 offline host assets, workload-node images, and OCI charts"
 mkdir -p airgap/archives
+
+mise x -- zarf tools download-init \
+  --architecture arm64 \
+  --output-directory airgap/archives
+
+HOST_IMAGES=(
+  kindest/node:v1.36.1
+  kindest/node:v1.35.0
+  kindest/haproxy:v20230606-42a2262b
+  docker.io/library/registry:2
+)
+for img in "${HOST_IMAGES[@]}"; do
+  docker pull --platform linux/arm64 "$img" >/dev/null
+done
+docker save -o airgap/archives/kindest_node_v1.36.1_mgmt.tar kindest/node:v1.36.1
+docker save -o airgap/archives/kindest_node_v1.35.0.tar kindest/node:v1.35.0
+docker save -o airgap/archives/kindest_haproxy_v20230606-42a2262b.tar kindest/haproxy:v20230606-42a2262b
+docker save -o airgap/archives/docker.io_library_registry_2.tar docker.io/library/registry:2
+echo "    saved Zarf init package and host-daemon image archives"
+
 WORKLOAD_IMAGES=(
   registry.k8s.io/pause:3.10.1
   docker.io/kindest/kindnetd:v20260528-9350166c
