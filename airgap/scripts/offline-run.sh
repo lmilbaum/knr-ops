@@ -167,4 +167,4 @@ else
   cat "$SUMMARY"
   exit 0
 fi
-} > "$LOG" 2>&1
+} 2>&1 | tee "$LOG"
