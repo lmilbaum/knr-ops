@@ -29,8 +29,8 @@ resources. There is no app source code here, only declarative infrastructure.
   `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
   renders, and stages the kit (`build-*`, `render-*`, `stage-*`,
   `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs. The
-  `air-gapped` workflow builds the ARM64 transfer bundle for every PR and for
-  manual dispatches.
+  `air-gapped` workflow builds the ARM64 transfer bundle and exercises a
+  monitored deployment only on upstream `main`, nightly or by manual dispatch.
 - `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
   kind + Flux bootstrap, full teardown).
 - `docs/`: detailed documentation (see the table in README.md).
