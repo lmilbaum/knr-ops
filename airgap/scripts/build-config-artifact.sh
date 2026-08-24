@@ -322,7 +322,7 @@ PUSH_ARGS=(
   --revision="${GIT_REF}@sha1:${GIT_SHA}"
   --reproducible
 )
-if [[ "$OCI_REGISTRY" == localhost:* ]]; then
+if [[ "$OCI_REGISTRY" == localhost:* || "$OCI_REGISTRY" == 127.0.0.1:* ]]; then
   PUSH_ARGS+=(--insecure-registry)
 fi
 if [ -n "${OCI_USERNAME:-}" ] && [ -n "${OCI_PASSWORD:-}" ]; then

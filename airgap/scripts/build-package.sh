@@ -2,7 +2,7 @@
 # build-package.sh — connected-side package build.
 #
 #   1. mise run validate (all overlays still build)
-#   2. build-config-artifact.sh (trimmed airgap tree -> localhost:5001 OCI)
+#   2. build-config-artifact.sh (trimmed airgap tree -> configured OCI registry)
 #   3. stage workload-node pod images into archives/ (host-daemon tarball for
 #      CAPD preLoadImages; distinct from the mgmt substrate images the Zarf
 #      package pushes into the internal registry)
@@ -20,6 +20,35 @@ mise run validate
 
 echo "==> 2/4 config artifact"
 "$SCRIPT_DIR/build-config-artifact.sh"
+
+# The package must pull the same config artifact that the preceding step
+# published. Keep zarf.yaml's local-registry default for ordinary builds, but
+# temporarily rewrite its image reference when OCI_REGISTRY is overridden.
+if [ -n "${OCI_REGISTRY:-}" ]; then
+  OCI_REPOSITORY="${OCI_REPOSITORY:-knr-ops-airgap}"
+  OCI_TAG="${OCI_TAG:-latest}"
+  ZARF_CONFIG="$REPO_ROOT/airgap/zarf.yaml"
+  ZARF_CONFIG_BACKUP=$(mktemp "${TMPDIR:-/tmp}/knr-ops-zarf.XXXXXX")
+  cp "$ZARF_CONFIG" "$ZARF_CONFIG_BACKUP"
+  restore_zarf_config() {
+    cp "$ZARF_CONFIG_BACKUP" "$ZARF_CONFIG"
+    rm -f "$ZARF_CONFIG_BACKUP"
+  }
+  trap restore_zarf_config EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  EXPECTED_ARTIFACT="localhost:5001/knr-ops-airgap:latest"
+  CONFIG_ARTIFACT="${OCI_REGISTRY}/${OCI_REPOSITORY}:${OCI_TAG}"
+  MATCH_COUNT=$(grep -Fc "$EXPECTED_ARTIFACT" "$ZARF_CONFIG" || true)
+  if [ "$MATCH_COUNT" -ne 1 ]; then
+    echo "ERROR: expected exactly one config artifact reference: ${EXPECTED_ARTIFACT}" >&2
+    exit 1
+  fi
+  sed -i.bak "s|${EXPECTED_ARTIFACT}|${CONFIG_ARTIFACT}|" "$ZARF_CONFIG"
+  rm -f "${ZARF_CONFIG}.bak"
+  echo "    zarf config artifact: ${CONFIG_ARTIFACT}"
+fi
 
 echo "==> 3/4 workload-node pod images + OCI charts"
 mkdir -p airgap/archives
