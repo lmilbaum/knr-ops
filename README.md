@@ -5,13 +5,15 @@
 
 A GitOps pattern for managing cloud infrastructure through the Kubernetes API:
 no Terraform, no DSLs, no state files, no second toolchain. This repository is
-a working reference implementation of that pattern on AWS. **It is not a
+a working reference implementation of that pattern, with two profiles: `aws`,
+which runs it end-to-end on AWS EKS, and `local-host`, which runs the same
+lifecycle on local clusters with no cloud account involved. **It is not a
 product**: fork it, strip it down, and adapt the layout to your own cloud and
 clusters.
 
 A local [kind](https://kind.sigs.k8s.io/) cluster bootstraps
 [Flux](https://fluxcd.io/), which then reconciles everything else from this
-repository:
+repository. The `aws` profile reconciles:
 
 - AWS EKS workload clusters provisioned via
   [CAPA](https://cluster-api-aws.sigs.k8s.io/)
@@ -20,10 +22,18 @@ repository:
   S3, RDS, and IAM operators managing secure S3 buckets, PostgreSQL instances,
   and read-only IAM roles) running on each workload cluster
 
+The `local-host` profile walks the identical chain with the CAPD Docker
+provider instead of CAPA: a local OCI registry, a one-control-plane/one-worker
+workload cluster, a second Flux instance, and a Podinfo app reachable from
+your laptop. It covers the complete GitOps and CAPI lifecycle without
+provisioning AWS resources.
+
 After the one-time bootstrap, **everything is declared in Git as YAML**.
-The AWS profile declares 2 CAPI workload clusters: 4 node pools across
-2 regions, 2 S3 buckets, 2 RDS instances, 1 reader user, and one reader role
-per workload cluster. 0 HCL, 0 state files.
+The `aws` profile declares 2 CAPI workload clusters: 4 node pools (ARM and
+GPU) across 2 regions, 2 S3 buckets, 2 RDS instances, 1 reader user, and one
+reader role per workload cluster. The repository also ships a
+[Zarf](https://zarf.dev/) air-gap kit that packages the `local-host`
+deployment for offline installs. 0 HCL, 0 state files.
 
 ![knr-ops architecture](docs/knr-ops-architecture.svg)
 
