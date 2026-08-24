@@ -62,6 +62,7 @@ if CLUSTER_NAME=$CLUSTER_NAME REGISTRY_NAME=$REGISTRY_NAME REGISTRY_PORT=$REGIST
   pass "stage (docker load, kind create, registry seed)"
 else
   fail "stage-and-create-cluster.sh"
+  exit 1
 fi
 
 step "2. zarf init"
@@ -70,6 +71,7 @@ if ( cd "$AIRGAP_DIR" && "$ZARF" init "$ARCHIVES/zarf-init-arm64-v0.83.0.tar.zst
   pass "zarf init"
 else
   fail "zarf init"
+  exit 1
 fi
 
 step "3. zarf package deploy"
@@ -77,6 +79,7 @@ if ( cd "$AIRGAP_DIR" && "$ZARF" package deploy "$ARCHIVES/zarf-package-knr-ops-
   pass "zarf package deploy"
 else
   fail "zarf package deploy"
+  exit 1
 fi
 
 step "4. verify mgmt substrate (all non-baked images from 127.0.0.1:31999)"
