@@ -108,8 +108,8 @@ a clean runner. The bundle upload uses compression level 0 because its largest
 contents are already-compressed container layers and Zstandard archives. CI
 also deliberately avoids caching container images: pulling them during every
 run verifies that the declared air-gap inventory remains available and
-complete. Repository and ref guards prevent forks or non-`main` manual
-dispatches from consuming the ARM64 runners.
+complete. Fork and default-branch guards prevent fork or non-default-branch
+manual dispatches from consuming the ARM64 runners.
 
 Gap (deploy) — from `airgap/`:
 
