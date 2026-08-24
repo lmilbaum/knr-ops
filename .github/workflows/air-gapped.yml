@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: air-gapped
+
+on:
+  # Intentionally run for every PR: package inputs span the repository. A path
+  # filter could miss new inputs while still producing a successful but
+  # incomplete bundle.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: air-gapped-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build air-gap bundle
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5001:5000
+        options: >-
+          --health-cmd "wget --spider --quiet http://localhost:5000/v2/"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install mise
+        uses: jdx/mise-action@v4.2.3
+        with:
+          version: 2026.8.10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build air-gap bundle
+        run: airgap/scripts/build-package.sh
+        env:
+          AIRGAP_CLUSTER_NAME: airgap-wl
+          OCI_REGISTRY: localhost:5001
+          WORKLOAD_REGISTRY_HOST: knr-registry-airgap
+
+      - name: Store air-gap bundle
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: knr-ops-airgap-arm64
+          path: |
+            airgap/archives/
+            airgap/config-artifact/
+            airgap/zarf-package-knr-ops-airgap-*.tar.zst
+          if-no-files-found: error
+          retention-days: 1

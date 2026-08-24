@@ -85,6 +85,9 @@ The verification linchpin is the agent's **image rewrite** plus a Ready
 | `archives/charts/{flux-operator,podinfo}-*.tgz` | OCI charts seeded into knr-registry |
 | `config-artifact/` | trimmed GitOps tree, re-pushed as `knr-ops:latest` |
 
+The CI artifact excludes the `zarf` CLI; fetch it via mise or the Zarf release
+for the deploy host's target OS before crossing the gap.
+
 ## Sequence
 
 Connected (build):
@@ -92,6 +95,10 @@ Connected (build):
 ```sh
 airgap/scripts/build-package.sh   # validate, artifact, images, charts, zarf package create
 ```
+
+The `air-gapped` GitHub Actions workflow runs the same build on ARM64 for
+every pull request and for manual dispatches, then retains the generated
+transfer artifacts as a one-day workflow artifact.
 
 Gap (deploy) — from `airgap/`:
 
