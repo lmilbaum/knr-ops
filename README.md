@@ -49,9 +49,11 @@ not a developer self-service portal; you are the consumer.
 - **State files**: drift, locking, corruption. Controllers reconcile actual
   state continuously instead of diffing a snapshot.
 - **The plan/apply gap**: PRs are reviewed as **rendered** Flux diffs (blast
-  radius, image changes, render failures) by an in-cluster
-  [konflate](https://github.com/home-operations/konflate) instance: you review
-  byte-for-byte what reconciles. See [docs/konflate.md](docs/konflate.md).
+  radius, image changes, render failures) by
+  [konflate](https://github.com/home-operations/konflate): a GitHub Actions
+  workflow runs it on every PR push as a merge gate, and an in-cluster
+  instance posts the summary to the PR. You review byte-for-byte what
+  reconciles. See [docs/konflate.md](docs/konflate.md).
 - **Two toolchains**: HCL for infra, YAML for workloads. One control plane
   means RBAC, policy, and audit cover both.
 - **Lifecycle split**: Terraform builds the cluster but can't manage what's
@@ -82,8 +84,13 @@ mise run sops-keygen        # first time only: age key for SOPS
 mise run bootstrap          # kind cluster + Flux; everything else is GitOps
 flux get kustomizations --watch
 mise run validate           # build every kustomize overlay (mirrors CI)
+mise run deps-check         # verify version pins against deps/versions.toml (mirrors CI)
 mise run teardown           # full teardown (EKS, AWS resources, kind)
 ```
+
+Version bumps change exactly one value in `deps/versions.toml`; generated
+consumers and CI keep the rest in sync (see
+[docs/dependencies.md](docs/dependencies.md)).
 
 ### Mise profiles
 
@@ -129,7 +136,7 @@ suspends Flux and removes the AWS-managed infrastructure.
 | [docs/architecture.md](docs/architecture.md) | Architecture diagram, reconciliation order, how workload apps are delivered |
 | [docs/aws-iam.md](docs/aws-iam.md) | EKS Pod Identity, ACK controller IAM roles, per-cluster reader roles, the `knr-ops-reader` console user |
 | [docs/workload-resources.md](docs/workload-resources.md) | S3 bucket security posture, RDS instances, known limitations |
-| [docs/konflate.md](docs/konflate.md) | Rendered Flux PR review: in-cluster konflate instance, write-back to PRs, tokens |
+| [docs/konflate.md](docs/konflate.md) | Rendered Flux PR review: GitHub Actions gate, in-cluster instance, write-back to PRs, tokens |
 | [docs/secrets.md](docs/secrets.md) | SOPS + age secret management, key setup, credential rotation |
 | [docs/operations.md](docs/operations.md) | Prerequisites, AWS service quotas, configuration, bootstrap, verification, teardown, validation |
 | [docs/extending.md](docs/extending.md) | Adding a workload cluster, adding apps to the workload clusters, adding other providers (Azure, Talos, k0smotron) |
@@ -138,8 +145,10 @@ suspends Flux and removes the AWS-managed infrastructure.
 ## Repository layout
 
 ```
-├── airgap/                       Zarf air-gap package, image inventory, scripts
+├── airgap/                       Zarf air-gap bundle, image inventory, scripts
 ├── bootstrap.sh / teardown.sh     One-time imperative bootstrap / full teardown
+├── deps/                          Version catalog (versions.toml) + drift-check
+│                                  scripts; single place to bump any dependency
 ├── docs/                          Detailed documentation (see table above)
 ├── mise.toml / mise.*.toml        Pinned toolchain and AWS/local-host tasks
 ├── mgmt/aws/                     Synced by the MANAGEMENT cluster's Flux
@@ -154,7 +163,7 @@ suspends Flux and removes the AWS-managed infrastructure.
 │   └── clusters/                  EKS cluster defs (eu-north-1, eu-west-1;
 │                                  ARM + GPU MachinePools)
 ├── mgmt/local-host/               OCI-synced CAPI/CAPD local workload cluster
-└── workload/                          Synced by each WORKLOAD cluster's Flux
+└── workload/                      Synced by each WORKLOAD cluster's Flux
     ├── base/                      ACK S3/RDS/IAM controllers, Bucket CRs,
     │                              DBInstance CRs, reader Role CRs
     ├── local-host/                OCI-synced Podinfo workload overlay

@@ -28,12 +28,14 @@ resources. There is no app source code here, only declarative infrastructure.
 - `airgap/`: Zarf offline transfer bundle for the local-host profile.
   `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
   renders, and stages the bundle (`build-*`, `render-*`, `stage-*`,
-  `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs. The
-  `air-gapped` workflow builds the ARM64 transfer bundle and exercises a
-  monitored deployment and an egress-blocked deployment in parallel only on
-  upstream `main`, nightly or by manual dispatch. Running both is a temporary
-  comparison of validation accuracy and performance; the less effective job
-  will be removed after enough runs are evaluated.
+  `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs.
+  The `air-gapped` workflow (upstream main only, nightly at 02:17 UTC or
+  manual dispatch) builds the ARM64 bundle on an arm64 runner, then runs
+  two comparison deployments in parallel: one with public traffic monitored
+  and one with external egress blocked (fails if any public traffic was
+  attempted). Both deploy evidence artifacts are uploaded. Running both is
+  a temporary comparison of validation accuracy and performance; the less
+  effective job will be removed after enough runs are evaluated.
 - `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
   kind + Flux bootstrap, full teardown).
 - `docs/`: detailed documentation (see the table in README.md).
@@ -42,8 +44,11 @@ resources. There is no app source code here, only declarative infrastructure.
   activated with `MISE_ENV=aws`.
 - `deps/versions.toml`: the single authoritative dependency version
   catalog. Every pinned version in the repo is either generated from it or
-  validated against it by `mise run deps-check`. Bump versions only there;
-  see `docs/dependencies.md`.
+  validated against it by `mise run deps-check` (same check CI runs). A
+  dependency bump changes exactly one value there; see
+  `docs/dependencies.md`. Generated consumers (`zarf.yaml`, `images.txt`,
+  airgap scripts) are rendered from the catalog, so never hand-edit their
+  version literals.
 
 ## The golden rules (read before changing anything)
 
