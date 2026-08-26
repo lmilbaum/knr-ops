@@ -40,6 +40,10 @@ resources. There is no app source code here, only declarative infrastructure.
 - `mise.toml`: pinned tool versions and all task entrypoints.
   `mise.aws.toml` is the AWS tool layer (aws-cli, clusterawsadm),
   activated with `MISE_ENV=aws`.
+- `deps/versions.toml`: the single authoritative dependency version
+  catalog. Every pinned version in the repo is either generated from it or
+  validated against it by `mise run deps-check`. Bump versions only there;
+  see `docs/dependencies.md`.
 
 ## The golden rules (read before changing anything)
 

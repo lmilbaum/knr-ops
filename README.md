@@ -125,6 +125,7 @@ suspends Flux and removes the AWS-managed infrastructure.
 
 | Page | Contents |
 |---|---|
+| [docs/dependencies.md](docs/dependencies.md) | Dependency version catalog: the single place to bump versions, update procedure, intentional differences |
 | [docs/architecture.md](docs/architecture.md) | Architecture diagram, reconciliation order, how workload apps are delivered |
 | [docs/aws-iam.md](docs/aws-iam.md) | EKS Pod Identity, ACK controller IAM roles, per-cluster reader roles, the `knr-ops-reader` console user |
 | [docs/workload-resources.md](docs/workload-resources.md) | S3 bucket security posture, RDS instances, known limitations |

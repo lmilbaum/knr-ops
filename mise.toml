@@ -2,6 +2,7 @@ min_version = "2026.8.10"
 
 [tools]
 go = "1.26"
+python = "3.13"
 kubectl = "1.35"
 kind = "0.32"
 helm = "4.2"
@@ -21,10 +22,19 @@ bin = "zarf"
 [settings]
 env_file = ".env"
 
+[tasks.deps-check]
+description = "Validate repo version literals against deps/versions.toml"
+run = "python3 deps/scripts/check.py --forbid"
+
 [tasks.validate]
 description = "Check shell scripts and build every kustomize overlay"
 run = '''
 fail=0
+echo "==> deps-check"
+if ! python3 deps/scripts/check.py --forbid; then
+  echo "    FAILED: dependency drift" >&2
+  fail=1
+fi
 for script in bootstrap.sh teardown.sh; do
   echo "==> bash -n $script"
   if ! bash -n "$script"; then
