@@ -26,13 +26,6 @@ env_file = ".env"
 description = "Validate repo version literals against deps/versions.toml"
 run = "python3 deps/scripts/check.py --forbid"
 
-[tasks.deps-render]
-description = "Re-render generated consumers, then re-check drift"
-run = '''
-python3 deps/scripts/render.py
-python3 deps/scripts/check.py --forbid
-'''
-
 [tasks.validate]
 description = "Check shell scripts and build every kustomize overlay"
 run = '''

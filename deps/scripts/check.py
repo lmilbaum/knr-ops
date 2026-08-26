@@ -80,6 +80,10 @@ def run_slots(catalog):
         expected = slot["count"]
         key = slot["key"]
         value = catalog["versions"][key]
+        if not path.is_file():
+            print(f"FAIL slot: file={slot['file']} key={key} (file not found)")
+            failures += 1
+            continue
         rx = slot_regex(pattern, str(value))
         actual = len(rx.findall(path.read_text()))
         if actual != expected:
@@ -148,11 +152,14 @@ def run_forbid(catalog):
 def run_markdown(catalog):
     print("| Key | Version |")
     print("|---|---|")
-    for key, value in catalog["versions"].items():
+    slots = {}
+    for s in catalog.get("slot", []):
+        slots.setdefault(s["key"], []).append(s["file"])
+    for key in sorted(catalog["versions"]):
+        value = catalog["versions"][key]
         note = ""
-        slots = [s["file"] for s in catalog.get("slot", []) if s["key"] == key]
-        if slots:
-            note = f" (validated in {', '.join(sorted(set(slots)))})"
+        if key in slots:
+            note = f" (validated in {', '.join(sorted(set(slots[key])))})"
         print(f"| `{key}` | `{value}`{note} |")
     return 0
 

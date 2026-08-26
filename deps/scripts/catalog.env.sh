@@ -23,6 +23,7 @@ _eval_output="$(
     }
     section && /=/ {
       line = $0
+      if (line ~ /^[ \t]*#/) next
       key = line
       sub(/[ \t]*=.*/, "", key)
       value = line
