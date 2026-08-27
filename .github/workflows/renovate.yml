@@ -25,7 +25,7 @@ jobs:
 
       - name: Renovate dry-run config check
         if: github.event_name == 'workflow_dispatch'
-        uses: renovatebot/github-action@v42
+        uses: renovatebot/github-action@v46.2.4
         with:
           configurationFile: renovate.json5
           token: ${{ secrets.RENOVATE_TOKEN }}
@@ -36,7 +36,7 @@ jobs:
 
       - name: Renovate scheduled run
         if: github.event_name == 'schedule'
-        uses: renovatebot/github-action@v42
+        uses: renovatebot/github-action@v46.2.4
         with:
           configurationFile: renovate.json5
           token: ${{ secrets.RENOVATE_TOKEN }}
