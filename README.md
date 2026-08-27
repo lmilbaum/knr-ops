@@ -170,3 +170,7 @@ suspends Flux and removes the AWS-managed infrastructure.
     ├── eu-north-01/               Per-cluster overlay (sync target)
     └── eu-west-01/                Per-cluster overlay (sync target)
 ```
+
+## License
+
+This repository is licensed under the [MIT License](LICENSE).
