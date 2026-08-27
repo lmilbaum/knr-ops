@@ -51,6 +51,7 @@
       "matchStrings": ["go = \"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "golang",
       "datasourceTemplate": "golang-version",
+      "versioningTemplate": "loose",
       "autoReplaceStringTemplate": "go = \"{{newValue}}\""
     },
     {
@@ -220,7 +221,7 @@
       "description": "airgap images.txt container refs",
       "managerFilePatterns": ["/(^|/)airgap/images\\.txt$/"],
       "matchStrings": [
-        "(?:^|\n)(?<depName>(?:[a-zA-Z0-9._-]+(?::[0-9]+)?/)?(?:[^\s:@#/]+/)*[^\s:@#/]+):(?<currentValue>[^\s@:]+)(@(?<currentDigest>sha256:[a-f0-9]+))?[ \t]*(?:#.*)?\n"
+        "(?:^|\n)(?<depName>(?:[a-zA-Z0-9._-]+(?::[0-9]+)?/)?(?:[^\\s:@#/]+/)*[^\\s:@#/]+):(?<currentValue>[^\\s@:]+)(@(?<currentDigest>sha256:[a-f0-9]+))?[ \t]*(?:#.*)?"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
@@ -230,13 +231,16 @@
       "description": "zarf.yaml image refs (registry with optional port)",
       "managerFilePatterns": ["/(^|/)airgap/zarf\\.yaml$/"],
       "matchStrings": [
-        "- (?<depName>[a-zA-Z0-9._-]+(?::[0-9]+)?/[a-zA-Z0-9._/-]+):(?<currentValue>[^\s@]+)\n"
+        "- (?<depName>[a-zA-Z0-9._-]+(?::[0-9]+)?/[a-zA-Z0-9._/-]+):(?<currentValue>[^\\s@]+)"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
     },
     // EKS addon versions (*-eksbuild.*) intentionally not managed: they have
     // no public registry datasource. Tracked in issue #74 as manual updates.
+    // Unversioned tags (e.g. localhost:5001/knr-ops-airgap:latest in
+    // zarf.yaml, built locally per run) are also intentionally untracked:
+    // a bare "latest" tag has no comparable version.
     // ── end customManagers ────────────────────────────────────────────────
   ],
   "packageRules": [
