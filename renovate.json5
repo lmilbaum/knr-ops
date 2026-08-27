@@ -159,7 +159,7 @@
       "description": "mise: clusterawsadm pin (inline table form)",
       "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
       "matchStrings": ["clusterawsadm = \\{ version = \"(?<currentValue>[^\"]+)\""],
-      "depNameTemplate": "kubernetes-sigs/clusterawsadm",
+      "depNameTemplate": "kubernetes-sigs/cluster-api-provider-aws",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.+)",
       "autoReplaceStringTemplate": "clusterawsadm = { version = \"{{newValue}}\""
