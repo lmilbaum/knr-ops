@@ -196,7 +196,7 @@
         "/(^|/)mgmt/(aws|local-host)/capi-providers/caaph-system/.+\\.ya?ml$/"
       ],
       "matchStrings": ["\\s{2}version: \"v(?<currentValue>[^\"]+)\""],
-      "depNameTemplate": "kubernetes-sigs/cluster-api-addon-helm",
+      "depNameTemplate": "kubernetes-sigs/cluster-api-addon-provider-helm",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.+)",
       "autoReplaceStringTemplate": "  version: \"v{{newValue}}\""
@@ -265,7 +265,7 @@
       "matchPackageNames": [
         "kubernetes-sigs/cluster-api",
         "kubernetes-sigs/cluster-api-provider-aws",
-        "kubernetes-sigs/cluster-api-addon-helm"
+        "kubernetes-sigs/cluster-api-addon-provider-helm"
       ],
       "groupName": "cluster-api"
     },
@@ -275,15 +275,9 @@
       "separateMajorMinor": true,
       "groupName": null
     },
-    {
-      "description": "Pin floating latest mise values to concrete release versions",
-      "matchPackageNames": [
-        "fluxcd/flux2",
-        "getsops/sops",
-        "FiloSottile/age",
-        "aws/aws-cli"
-      ],
-      "rangeStrategy": "pin"
-    }
+    // Floating "latest" pins (flux2, sops, age, aws-cli in mise; the zarf
+    // local-registry image) are intentionally untracked: Renovate skips a
+    // "latest" currentValue as invalid before any rule can pin it, so they
+    // stay floating by decision until pinned by hand once.
   ]
 }
