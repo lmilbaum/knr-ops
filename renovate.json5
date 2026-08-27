@@ -1,0 +1,286 @@
+{
+  // Renovate config for knr-ops (issue #74).
+  // Runs via scheduled GitHub Actions (see .github/workflows/renovate.yml).
+  // Version sources covered:
+  //   - Flux / Helm / Kubernetes manifests under mgmt/ and workload/
+  //   - GitHub Actions workflow action pins (.github/workflows/)
+  //   - mise tool pins (explicit per-tool custom managers below; the native
+  //     mise manager is disabled so dep resolution is deterministic)
+  //   - clusterctl operator provider manifests under mgmt/*/capi-providers/
+  //   - kind node images (cluster classes, airgap scripts, image inventory)
+  //   - airgap image inventory and zarf.yaml image lists
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":disableRateLimiting"
+  ],
+  "schedule": ["after 6am on monday"],
+  "timezone": "Europe/Helsinki",
+  "rangeStrategy": "pin",
+  "commitBody": "Refs: #74",
+  "suppressNotifications": ["prEditedNotification", "prIgnoreNotification"],
+  "rebaseWhen": "conflicted",
+  "ignorePaths": [
+    "airgap/rendered/**",
+    "airgap/archives/**",
+    "airgap/sbom/**",
+    "airgap/manifests/**"
+  ],
+  "flux": {
+    "managerFilePatterns": ["/(^|/)(mgmt|workload)/.+\\.ya?ml$/"]
+  },
+  "kubernetes": {
+    "managerFilePatterns": ["/(^|/)(mgmt|workload)/.+\\.ya?ml$/"]
+  },
+  "helm-values": {
+    "managerFilePatterns": ["/(^|/)(mgmt|workload)/.+\\.ya?ml$/"]
+  },
+  // Explicit per-tool custom managers replace the native mise manager so each
+  // tool resolves against the exact upstream GitHub repo we install from.
+  "mise": {
+    "enabled": false
+  },
+  "customManagers": [
+    // ── mise tool pins ────────────────────────────────────────────────────
+    {
+      "customType": "regex",
+      "description": "mise: go toolchain pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^go = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "golang/go",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^go(?<version>.+)",
+      "autoReplaceStringTemplate": "go = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: python toolchain pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^python = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "python/cpython",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "python = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: kubectl version pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^kubectl = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "kubernetes/kubernetes",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "kubectl = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: kind version pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^kind = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "kubernetes-sigs/kind",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "kind = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: helm version pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^helm = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "helm = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: clusterctl version pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^clusterctl = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "fluxcd/clusterctl",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "clusterctl = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: flux2 CLI pin (floating latest tag)",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^flux2 = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "fluxcd/flux2",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "flux2 = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: sops pin (floating latest tag)",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^sops = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "getsops/sops",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "sops = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: age pin (floating latest tag)",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^age = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "FiloSottile/age",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "age = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: zarf CLI pin (github backend, v-prefixed)",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["^version = \"v(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "zarf-dev/zarf",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "version = \"v{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: aws-cli pin (floating latest tag)",
+      "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
+      "matchStrings": ["^aws-cli = \"(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "aws/aws-cli",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "aws-cli = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "mise: clusterawsadm pin (inline table form)",
+      "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
+      "matchStrings": ["^clusterawsadm = \\{ version = \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "kubernetes-sigs/clusterawsadm",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "clusterawsadm = { version = \"{{newValue}}\""
+    },
+    // ── clusterctl operator provider manifests ───────────────────────────
+    {
+      "customType": "regex",
+      "description": "CAPI core, kubeadm, and CAPD provider versions",
+      "managerFilePatterns": [
+        "/(^|/)mgmt/(aws|local-host)/capi-providers/(capi-system|capd-system)/.+\\.ya?ml$/"
+      ],
+      "matchStrings": ["^\\s{2}version: \"v(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "kubernetes-sigs/cluster-api",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "  version: \"v{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "CAPA (AWS infrastructure) provider version",
+      "managerFilePatterns": [
+        "/(^|/)mgmt/aws/capi-providers/capa-system/.+\\.ya?ml$/"
+      ],
+      "matchStrings": ["^\\s{2}version: \"v(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "kubernetes-sigs/cluster-api-provider-aws",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "  version: \"v{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "CAAPH (helm add-on) provider version",
+      "managerFilePatterns": [
+        "/(^|/)mgmt/(aws|local-host)/capi-providers/caaph-system/.+\\.ya?ml$/"
+      ],
+      "matchStrings": ["^\\s{2}version: \"v(?<currentValue>[^\"]+)\"$"],
+      "depNameTemplate": "kubernetes-sigs/cluster-api-addon-helm",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "  version: \"v{{newValue}}\""
+    },
+    // ── kind node images ─────────────────────────────────────────────────
+    {
+      "customType": "regex",
+      "description": "kindest/node image pins in cluster classes and airgap scripts",
+      "managerFilePatterns": [
+        "/(^|/)mgmt/.+\\.ya?ml$/",
+        "/(^|/)airgap/scripts/.+\\.sh$/"
+      ],
+      "matchStrings": ["kindest/node:v(?<currentValue>[0-9A-Za-z.\\-]+)"],
+      "depNameTemplate": "kindest/node",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker",
+      "autoReplaceStringTemplate": "kindest/node:v{{newValue}}"
+    },
+    // ── airgap image inventory and zarf package ──────────────────────────
+    {
+      "customType": "regex",
+      "description": "airgap images.txt container refs",
+      "managerFilePatterns": ["/(^|/)airgap/images\\.txt$/"],
+      "matchStrings": [
+        "^(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)(@(?<currentDigest>sha256:[a-f0-9]+))?$"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "zarf.yaml image refs (registry with optional port)",
+      "managerFilePatterns": ["/(^|/)airgap/zarf\\.yaml$/"],
+      "matchStrings": [
+        "- (?<depName>[a-zA-Z0-9._-]+(?::[0-9]+)?/[a-zA-Z0-9._/-]+):(?<currentValue>[^\\s@]+)$"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    // EKS addon versions (*-eksbuild.*) intentionally not managed: they have
+    // no public registry datasource. Tracked in issue #74 as manual updates.
+    // ── end customManagers ────────────────────────────────────────────────
+  ],
+  "packageRules": [
+    {
+      "description": "No automerge anywhere; merges stay manual (issue #74)",
+      "matchUpdateTypes": ["major", "minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": false
+    },
+    {
+      "description": "Group Flux controller images and CLI updates",
+      "matchDatasources": ["docker", "github-releases", "helm"],
+      "matchPackageNames": [
+        "/^ghcr\\.io/fluxcd//",
+        "/^ghcr\\.io/controlplaneio-fluxcd//",
+        "/^fluxcd//"
+      ],
+      "groupName": "flux"
+    },
+    {
+      "description": "Group the CAPI family (core, kubeadm, CAPD, CAPA, CAAPH)",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": [
+        "kubernetes-sigs/cluster-api",
+        "kubernetes-sigs/cluster-api-provider-aws",
+        "kubernetes-sigs/cluster-api-addon-helm"
+      ],
+      "groupName": "cluster-api"
+    },
+    {
+      "description": "Kubernetes node/cluster versions stay independent of each other",
+      "matchDepNames": ["kindest/node"],
+      "separateMajorMinor": true,
+      "groupName": null
+    },
+    {
+      "description": "Pin floating latest mise values to concrete release versions",
+      "matchPackageNames": [
+        "fluxcd/flux2",
+        "getsops/sops",
+        "FiloSottile/age",
+        "aws/aws-cli"
+      ],
+      "rangeStrategy": "pin"
+    }
+  ]
+}
