@@ -275,9 +275,10 @@
       "separateMajorMinor": true,
       "groupName": null
     },
-    // Floating "latest" pins (flux2, sops, age, aws-cli in mise; the zarf
-    // local-registry image) are intentionally untracked: Renovate skips a
-    // "latest" currentValue as invalid before any rule can pin it, so they
-    // stay floating by decision until pinned by hand once.
+    // flux2, sops, age, and aws-cli were previously floating "latest" pins;
+    // they are now pinned to concrete versions in mise.toml / mise.aws.toml
+    // so Renovate tracks them normally. The zarf local-registry image keeps
+    // its bare "latest" tag: it is built locally per run and has no
+    // comparable version.
   ]
 }
