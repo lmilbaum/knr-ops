@@ -47,9 +47,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          curl -s -H "Authorization: token *** github.token }}" "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          curl -sSf --retry 3 --retry-delay 2 -H "Authorization: token ${GITHUB_TOKEN}" "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
           sudo mv kustomize /usr/local/bin/
           kustomize version
+
+      - name: Unit-test inventory check
+        run: python3 -m unittest discover -s airgap/scripts -p 'test_*.py' -v
 
       - name: Check airgap image inventory
         run: python3 airgap/scripts/check-inventory.py
