@@ -31,6 +31,34 @@ enum Profile {
     Aws,
 }
 
+impl Profile {
+    /// Parse a profile name exactly as the script's `case` accepts it.
+    fn parse_value(value: &str) -> Result<Profile> {
+        Profile::value_variants()
+            .iter()
+            .copied()
+            .find(|p| {
+                p.to_possible_value()
+                    .is_some_and(|pv| pv.matches(value, false))
+            })
+            .with_context(|| {
+                format!("unsupported profile '{value}' (expected 'local-host' or 'aws')")
+            })
+    }
+}
+
+/// Resolve the active profile the way bootstrap.sh does
+/// (`PROFILE="${KNR_OPS_PROFILE:-${1:-aws}}"`): a non-empty
+/// KNR_OPS_PROFILE wins over the positional argument, then aws. clap
+/// resolves positional-over-env (the opposite), so the env var is read
+/// manually instead of via #[arg(env)].
+fn resolve_profile(env: Option<&str>, positional: Option<Profile>) -> Result<Profile> {
+    if let Some(value) = env.filter(|v| !v.is_empty()) {
+        return Profile::parse_value(value);
+    }
+    Ok(positional.unwrap_or(Profile::Aws))
+}
+
 impl std::fmt::Display for Profile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -47,9 +75,10 @@ impl std::fmt::Display for Profile {
 #[derive(Parser, Debug)]
 #[command(name = "knr-bootstrap", version, about)]
 struct Cli {
-    /// Deployment profile
-    #[arg(value_enum, env = "KNR_OPS_PROFILE", default_value = "aws")]
-    profile: Profile,
+    /// Deployment profile (a non-empty KNR_OPS_PROFILE takes precedence
+    /// over this argument, matching bootstrap.sh; default: aws)
+    #[arg(value_enum)]
+    profile: Option<Profile>,
 
     /// Delete and recreate an existing 'mgmt' cluster instead of reusing it.
     /// Required when the profile or the kind/registry configuration changed
@@ -97,13 +126,28 @@ struct Cli {
     #[arg(long, env = "AGE_PUBLIC_KEY")]
     age_public_key: Option<String>,
 
-    /// OCI repository name for the local-host artifact
+    /// OCI repository name for the local-host artifact. Caveat: the
+    /// workload FluxInstance still pins knr-ops:latest in Git, so a
+    /// non-default value only serves the management instance until #92
+    /// templates it.
     #[arg(long, env = "OCI_REPOSITORY", default_value = "knr-ops")]
     oci_repository: String,
 
-    /// OCI tag for the local-host artifact
+    /// OCI tag for the local-host artifact. Same caveat as
+    /// --oci-repository: the workload FluxInstance pins latest in Git.
     #[arg(long, env = "OCI_TAG", default_value = "latest")]
     oci_tag: String,
+}
+
+impl Cli {
+    /// The active profile, resolved the way bootstrap.sh resolves it:
+    /// non-empty KNR_OPS_PROFILE over the positional argument, aws last.
+    fn profile(&self) -> Result<Profile> {
+        resolve_profile(
+            std::env::var("KNR_OPS_PROFILE").ok().as_deref(),
+            self.profile,
+        )
+    }
 }
 
 // ── Pure helpers (unit-tested) ────────────────────────────────────────────────
@@ -170,12 +214,13 @@ fn render_kind_config(profile: Profile, registry_port: u16, engine_sock: &str) -
 
 /// Tools required on PATH for the given profile.
 fn required_tools(profile: Profile) -> Vec<&'static str> {
-    // The binary owns the HTTP checks the script used curl for, so curl is
-    // no longer required. flux and clusterctl are exercised by the
-    // local-host reconciliation watch (Step 5).
+    // The binary owns the HTTP checks the script used curl for. curl stays
+    // required for local-host anyway: the mise oci-push task shells out to
+    // curl for its registry availability check. flux and clusterctl are
+    // exercised by the local-host reconciliation watch (Step 5).
     let mut tools = vec!["kind", "helm", "kubectl"];
     if profile == Profile::LocalHost {
-        tools.extend(["mise", "flux", "clusterctl"]);
+        tools.extend(["mise", "flux", "clusterctl", "curl"]);
     }
     tools
 }
@@ -313,8 +358,9 @@ struct Preflight {
 }
 
 async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight> {
+    let profile = cli.profile()?;
     // Report every missing tool at once instead of failing on the first.
-    let missing: Vec<&str> = required_tools(cli.profile)
+    let missing: Vec<&str> = required_tools(profile)
         .into_iter()
         .filter(|t| !command_exists(t))
         .collect();
@@ -322,7 +368,7 @@ async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight
         bail!("missing required tools in PATH: {}", missing.join(", "));
     }
 
-    let aws = if cli.profile == Profile::Aws {
+    let aws = if profile == Profile::Aws {
         Some(preflight_aws(cli, http).await?)
     } else {
         None
@@ -509,7 +555,7 @@ async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     // Mount the host's container engine socket into the kind node at the
     // standard Docker socket path so in-cluster components can reach a
     // Docker-compatible API whether the backend is Docker or Podman.
-    let kind_config = render_kind_config(cli.profile, cli.registry_port, engine_sock);
+    let kind_config = render_kind_config(cli.profile()?, cli.registry_port, engine_sock);
     run_with_stdin(
         "kind",
         &["create", "cluster", "--name", "mgmt", "--config", "-"],
@@ -622,7 +668,19 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
     .await?;
 
     println!(">>> Publishing initial OCI artifact from the local Git checkout...");
-    run("mise", &["-E", "local-host", "run", "oci-push"]).await?;
+    // Forward the resolved values: the mise oci-push task reads them from
+    // its own environment, so CLI flags must not stop at this boundary.
+    let status = Command::new("mise")
+        .args(["-E", "local-host", "run", "oci-push"])
+        .env("REGISTRY_PORT", cli.registry_port.to_string())
+        .env("OCI_REPOSITORY", &cli.oci_repository)
+        .env("OCI_TAG", &cli.oci_tag)
+        .status()
+        .await
+        .with_context(|| "failed to spawn 'mise'")?;
+    if !status.success() {
+        bail!("'mise -E local-host run oci-push' failed with {status}");
+    }
     println!(
         ">>> Initial OCI artifact is available at oci://localhost:{port}/{repo}:{tag}",
         repo = cli.oci_repository,
@@ -999,6 +1057,7 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let profile = cli.profile()?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("knr-bootstrap/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -1016,7 +1075,7 @@ async fn main() -> Result<()> {
     ensure_kind_cluster(&cli, &preflight.engine_sock).await?;
 
     // Step 1.5: bootstrap the local container registry (local-host only).
-    if cli.profile == Profile::LocalHost {
+    if profile == Profile::LocalHost {
         bootstrap_local_registry(&cli, &preflight.engine, &http).await?;
     }
 
@@ -1042,13 +1101,13 @@ async fn main() -> Result<()> {
     install_flux_instance(&cli, preflight.aws.as_ref(), registry_config.path()).await?;
 
     // Step 5: watch local-host reconciliation.
-    if cli.profile == Profile::LocalHost {
+    if profile == Profile::LocalHost {
         watch_local_reconciliation(&cli, &preflight.engine).await?;
     }
 
     // Done. Everything else is driven by GitOps.
     println!();
-    match cli.profile {
+    match profile {
         Profile::Aws => {
             let url = preflight
                 .aws
@@ -1100,7 +1159,7 @@ mod tests {
     #[test]
     fn cli_defaults_match_script() {
         let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
-        assert_eq!(cli.profile, Profile::LocalHost);
+        assert_eq!(cli.profile, Some(Profile::LocalHost));
         assert!(!cli.recreate);
         assert_eq!(cli.registry_port, 5001);
         assert_eq!(cli.registry_ready_retries, 120);
@@ -1110,6 +1169,32 @@ mod tests {
         assert_eq!(cli.age_key_file, PathBuf::from("age.agekey"));
         assert_eq!(cli.oci_repository, "knr-ops");
         assert_eq!(cli.oci_tag, "latest");
+    }
+
+    #[test]
+    fn profile_resolution_matches_script_precedence() {
+        use Profile::{Aws, LocalHost};
+        // Non-empty env wins over the positional, like ${KNR_OPS_PROFILE:-${1:-aws}}.
+        assert_eq!(resolve_profile(Some("aws"), Some(LocalHost)).unwrap(), Aws);
+        assert_eq!(
+            resolve_profile(Some("local-host"), Some(Aws)).unwrap(),
+            LocalHost
+        );
+        // Empty env falls through to the positional, then aws.
+        assert_eq!(
+            resolve_profile(Some(""), Some(LocalHost)).unwrap(),
+            LocalHost
+        );
+        assert_eq!(resolve_profile(Some(""), None).unwrap(), Aws);
+        assert_eq!(resolve_profile(None, Some(Aws)).unwrap(), Aws);
+        assert_eq!(resolve_profile(None, None).unwrap(), Aws);
+        // Unknown env values fail with the script's error message.
+        assert_eq!(
+            resolve_profile(Some("bogus"), Some(LocalHost))
+                .unwrap_err()
+                .to_string(),
+            "unsupported profile 'bogus' (expected 'local-host' or 'aws')"
+        );
     }
 
     #[test]
@@ -1203,7 +1288,15 @@ mod tests {
         let local = required_tools(Profile::LocalHost);
         assert_eq!(
             local,
-            vec!["kind", "helm", "kubectl", "mise", "flux", "clusterctl"]
+            vec![
+                "kind",
+                "helm",
+                "kubectl",
+                "mise",
+                "flux",
+                "clusterctl",
+                "curl"
+            ]
         );
     }
 
