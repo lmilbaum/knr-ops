@@ -1077,3 +1077,163 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    const VALID_AGE_KEY: &str = "# created: 2026-01-01T00:00:00+02:00\n# public key: age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\nAGE-SECRET-KEY-1SECRETSECRETSECRET\n";
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_rejects_unknown_profile() {
+        assert!(Cli::try_parse_from(["knr-bootstrap", "bogus"]).is_err());
+    }
+
+    #[test]
+    fn cli_defaults_match_script() {
+        let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
+        assert_eq!(cli.profile, Profile::LocalHost);
+        assert!(!cli.recreate);
+        assert_eq!(cli.registry_port, 5001);
+        assert_eq!(cli.registry_ready_retries, 120);
+        assert_eq!(cli.node_ready_timeout, "120s");
+        assert_eq!(cli.local_reconcile_timeout, "15m");
+        assert_eq!(cli.github_user, "git");
+        assert_eq!(cli.age_key_file, PathBuf::from("age.agekey"));
+        assert_eq!(cli.oci_repository, "knr-ops");
+        assert_eq!(cli.oci_tag, "latest");
+    }
+
+    #[test]
+    fn cli_accepts_recreate_flag() {
+        let cli = Cli::try_parse_from(["knr-bootstrap", "aws", "--recreate"]).unwrap();
+        assert!(cli.recreate);
+    }
+
+    #[test]
+    fn parse_github_repo_accepts_https_urls() {
+        for url in [
+            "https://github.com/polarsquad/knr-ops",
+            "https://github.com/polarsquad/knr-ops/",
+            "https://github.com/polarsquad/knr-ops.git",
+        ] {
+            assert_eq!(parse_github_repo(url), Some("polarsquad/knr-ops"), "{url}");
+        }
+    }
+
+    #[test]
+    fn parse_github_repo_rejects_bad_urls() {
+        for url in [
+            "git@github.com:polarsquad/knr-ops.git",
+            "https://gitlab.com/polarsquad/knr-ops",
+            "https://github.com/polarsquad",
+            "https://github.com//knr-ops",
+            "https://github.com/polarsquad/",
+            "",
+        ] {
+            assert_eq!(parse_github_repo(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn age_key_validation_passes_valid_file() {
+        assert!(validate_age_key(VALID_AGE_KEY).is_empty());
+        assert_eq!(
+            extract_age_pubkey(VALID_AGE_KEY).as_deref(),
+            Some("age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq")
+        );
+    }
+
+    #[test]
+    fn age_key_validation_reports_all_missing_fields() {
+        let missing = validate_age_key("garbage\n");
+        assert_eq!(
+            missing,
+            vec![
+                "# created: header",
+                "# public key: comment",
+                "AGE-SECRET-KEY- line"
+            ]
+        );
+        let missing = validate_age_key("# created: now\nAGE-SECRET-KEY-1X\n");
+        assert_eq!(missing, vec!["# public key: comment"]);
+    }
+
+    #[test]
+    fn extract_workload_port_parses_engine_output() {
+        assert_eq!(
+            extract_workload_port("0.0.0.0:32771\n[::]:32771\n").as_deref(),
+            Some("32771")
+        );
+        assert_eq!(
+            extract_workload_port("127.0.0.1:6443\n").as_deref(),
+            Some("6443")
+        );
+        assert_eq!(extract_workload_port(""), None);
+        assert_eq!(extract_workload_port("garbage\n"), None);
+        assert_eq!(extract_workload_port("0.0.0.0:\n"), None);
+    }
+
+    #[test]
+    fn kind_config_includes_registry_patch_for_local_host_only() {
+        let local = render_kind_config(Profile::LocalHost, 5001, "/var/run/docker.sock");
+        assert!(local.contains("containerdConfigPatches"));
+        assert!(local.contains("localhost:5001"));
+        assert!(local.contains("http://knr-registry:5000"));
+        assert!(local.contains("hostPath: /var/run/docker.sock"));
+
+        let aws = render_kind_config(Profile::Aws, 5001, "/var/run/docker.sock");
+        assert!(!aws.contains("containerdConfigPatches"));
+        assert!(aws.contains("kind: Cluster"));
+        assert!(aws.contains("role: control-plane"));
+    }
+
+    #[test]
+    fn required_tools_cover_every_invoked_binary() {
+        let aws = required_tools(Profile::Aws);
+        assert_eq!(aws, vec!["kind", "helm", "kubectl"]);
+        let local = required_tools(Profile::LocalHost);
+        assert_eq!(
+            local,
+            vec!["kind", "helm", "kubectl", "mise", "flux", "clusterctl"]
+        );
+    }
+
+    #[test]
+    fn secret_manifests_keep_secrets_off_argv() {
+        // The secret travels inside the JSON manifest (stdin), and the
+        // manifest serializes without shell-visible arguments.
+        let manifest = json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": { "name": "flux-github-pat", "namespace": "flux-system" },
+            "type": "Opaque",
+            "stringData": { "username": "git", "password": "ghp_secret\"with'quotes" },
+        });
+        let rendered = manifest.to_string();
+        assert!(rendered.contains("ghp_secret\\\"with'quotes"));
+        // Round-trips as valid JSON despite embedded quotes.
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["stringData"]["password"], "ghp_secret\"with'quotes");
+    }
+
+    #[test]
+    fn sops_age_secret_key_name_embeds_pubkey() {
+        let pubkey = extract_age_pubkey(VALID_AGE_KEY).unwrap();
+        let manifest = json!({
+            "stringData": { format!("keys.{pubkey}.agekey"): VALID_AGE_KEY },
+        });
+        assert!(manifest["stringData"]
+            .as_object()
+            .unwrap()
+            .contains_key(&format!("keys.{pubkey}.agekey")));
+    }
+}
