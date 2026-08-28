@@ -29,6 +29,10 @@ resources. There is no app source code here, only declarative infrastructure.
   `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
   renders, and stages the bundle (`build-*`, `render-*`, `stage-*`,
   `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs.
+  Every build is signed and contains Zarf-generated per-component Syft SBOMs.
+  `offline-run.sh` verifies the signature, checksums, and extracted SBOMs
+  before staging; operator builds use `ZARF_SIGNING_KEY` / `ZARF_VERIFY_KEY`,
+  while upstream CI uses GitHub OIDC keyless signing.
   The `air-gapped` workflow (upstream main only, nightly at 02:17 UTC or
   manual dispatch) builds the ARM64 bundle on an arm64 runner, then runs
   two comparison deployments in parallel: one with public traffic monitored

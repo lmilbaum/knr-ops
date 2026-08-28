@@ -39,6 +39,18 @@ KUBECTL=$(command -v kubectl)
 DOCKER=$(command -v docker)
 export KUBECONFIG="$HOME/.kube/config"
 
+VERIFY_ARGS=()
+if [ -n "${ZARF_VERIFY_KEY:-}" ]; then
+  VERIFY_ARGS+=(--key "$ZARF_VERIFY_KEY")
+else
+  VERIFY_ARGS+=(
+    --certificate-identity
+    'https://github.com/polarsquad/knr-ops/.github/workflows/air-gapped.yml@refs/heads/main'
+    --certificate-oidc-issuer
+    'https://token.actions.githubusercontent.com'
+  )
+fi
+
 export CLUSTER_NAME=airgap-mgmt
 export REGISTRY_NAME=knr-registry-airgap
 export REGISTRY_PORT=5002
@@ -72,7 +84,19 @@ else
   done
 fi
 
-step "1. stage: docker load + kind create + seed registry"
+step "1. verify package signature, checksums, and embedded SBOMs"
+SBOM_OUTPUT=$(mktemp -d "${TMPDIR:-/tmp}/airgap-sbom.XXXXXX")
+if "$ZARF" package verify "$PACKAGE" "${VERIFY_ARGS[@]}" && \
+   "$ZARF" package inspect sbom "$PACKAGE" \
+     --output "$SBOM_OUTPUT" --verify=always "${VERIFY_ARGS[@]}" && \
+   python3 "$AIRGAP_DIR/scripts/verify-sbom.py" "$SBOM_OUTPUT"; then
+  pass "package signature, checksums, and embedded SBOMs verified offline ($SBOM_OUTPUT)"
+else
+  fail "package signature, checksums, or embedded SBOM verification"
+  exit 1
+fi
+
+step "2. stage: docker load + kind create + seed registry"
 if CLUSTER_NAME=$CLUSTER_NAME REGISTRY_NAME=$REGISTRY_NAME REGISTRY_PORT=$REGISTRY_PORT \
      "$AIRGAP_DIR/scripts/stage-and-create-cluster.sh"; then
   pass "stage (docker load, kind create, registry seed)"
@@ -81,7 +105,7 @@ else
   exit 1
 fi
 
-step "2. zarf init"
+step "3. zarf init"
 if ( cd "$AIRGAP_DIR" && "$ZARF" init "$ARCHIVES/zarf-init-arm64-v0.83.0.tar.zst" \
        --registry-mode=nodeport --components="" --confirm ); then
   pass "zarf init"
@@ -90,7 +114,7 @@ else
   exit 1
 fi
 
-step "3. zarf package deploy"
+step "4. zarf package deploy"
 if ( cd "$AIRGAP_DIR" && "$ZARF" package deploy "$PACKAGE" --confirm ); then
   pass "zarf package deploy"
 else
@@ -98,7 +122,7 @@ else
   exit 1
 fi
 
-step "4. verify mgmt substrate (all non-baked images from 127.0.0.1:31999)"
+step "5. verify mgmt substrate (all non-baked images from 127.0.0.1:31999)"
 sleep 20
 nonzarf=$("$KUBECTL" --context "$MGMT_CTX" get pods -A -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' 2>/dev/null \
   | grep -v "127.0.0.1:31999" \
@@ -110,7 +134,7 @@ else
   fail "mgmt images not from Zarf registry: $nonzarf"
 fi
 
-step "5. verify config artifact sync (OCIRepository Ready from Zarf registry)"
+step "6. verify config artifact sync (OCIRepository Ready from Zarf registry)"
 ociready=$("$KUBECTL" --context "$MGMT_CTX" -n flux-system get ocirepository flux-system \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
 ociurl=$("$KUBECTL" --context "$MGMT_CTX" -n flux-system get ocirepository flux-system -o jsonpath='{.spec.url}' 2>/dev/null)
@@ -120,12 +144,12 @@ else
   fail "OCIRepository not Ready/internal (ready=$ociready url=$ociurl)"
 fi
 
-step "6. verify mgmt Flux kustomizations"
+step "7. verify mgmt Flux kustomizations"
 "$KUBECTL" --context "$MGMT_CTX" -n flux-system wait kustomization/flux-system \
   --for=condition=Ready --timeout=10m >/dev/null 2>&1 \
   && pass "flux-system kustomization Ready" || fail "flux-system kustomization"
 
-step "7. verify CAPD workload cluster provisions offline"
+step "8. verify CAPD workload cluster provisions offline"
 wl_ready=$("$KUBECTL" --context "$MGMT_CTX" get clusters.cluster.x-k8s.io airgap-wl -n default \
   -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
 # wait up to 10m for Available
@@ -141,7 +165,7 @@ else
   fail "workload cluster airgap-wl not Available"
 fi
 
-step "8. verify workload nodes Ready + per-cluster Flux + podinfo"
+step "9. verify workload nodes Ready + per-cluster Flux + podinfo"
 port=$("$DOCKER" port airgap-wl-lb 6443/tcp 2>/dev/null | head -1 | sed 's/.*://')
 if [ -n "$port" ]; then
   "$KUBECTL" --context "$MGMT_CTX" get secret -n default airgap-wl-kubeconfig \

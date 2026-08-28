@@ -16,6 +16,9 @@ concurrency:
 jobs:
   build:
     name: Build air-gap bundle
+    permissions:
+      contents: read
+      id-token: write
     if: >-
       github.event.repository.fork == false &&
       github.ref_name == github.event.repository.default_branch
@@ -48,6 +51,7 @@ jobs:
           AIRGAP_CLUSTER_NAME: airgap-wl
           OCI_REGISTRY: localhost:5001
           WORKLOAD_REGISTRY_HOST: knr-registry-airgap
+          ZARF_KEYLESS_SIGNING: "1"
 
       - name: Store air-gap bundle
         uses: actions/upload-artifact@v7.0.1
@@ -170,6 +174,7 @@ jobs:
           path: |
             /tmp/airgap-offline-run.log
             /tmp/airgap-offline-summary.txt
+            /tmp/airgap-sbom.*
             /tmp/airgap-public-egress.pcap
             /tmp/airgap-public-egress.txt
           if-no-files-found: warn
@@ -259,6 +264,7 @@ jobs:
           path: |
             /tmp/airgap-offline-run.log
             /tmp/airgap-offline-summary.txt
+            /tmp/airgap-sbom.*
             /tmp/airgap-public-egress.pcap
             /tmp/airgap-public-egress.txt
           if-no-files-found: warn

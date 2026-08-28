@@ -30,6 +30,15 @@ mise pin in `mise.toml` selects the matching Linux or macOS arm64 release
 asset. Docker and kind are also required on the deploy host (the prototype
 keeps kind as the management-cluster substrate; see Known limitations).
 
+Every package build must be signed. For an operator build, generate or obtain
+a Cosign-compatible key pair, keep the private key outside the repository, and
+set `ZARF_SIGNING_KEY` to it. Set `ZARF_SIGNING_KEY_PASS` when the key is
+password-protected. Transfer the corresponding public key with the bundle and
+set `ZARF_VERIFY_KEY` to its gap-side path. The upstream `air-gapped` workflow
+instead uses GitHub OIDC keyless signing; its Sigstore bundle and Rekor
+inclusion proof are embedded in the Zarf archive and require no online lookup
+at verification time.
+
 ## Architecture
 
 Two registries, two image layers, one package.
@@ -37,10 +46,11 @@ Two registries, two image layers, one package.
 ```
 connected side (build)                        gap (deploy)
 ----------------------                        --------------
-airgap/scripts/build-package.sh               airgap/scripts/stage-and-create-cluster.sh
-  validate + render                            1. docker load archives/*.tar  (node + workload images)
-  build-config-artifact.sh -> OCI artifact     2. kind create cluster (mgmt)
-  zarf package create                          3. recreate + seed knr-registry (config + charts)
+airgap/scripts/build-package.sh               airgap/scripts/offline-run.sh
+  validate + render                            1. verify signature + checksums
+  build-config-artifact.sh -> OCI artifact     2. extract + validate embedded SBOMs
+  zarf package create (Syft SBOMs)             3. docker load + kind create + seed registry
+  zarf package sign                            4. zarf init + package deploy
         |                                      zarf init --registry-mode=nodeport
         v                                      zarf package deploy
 zarf-package-knr-ops-airgap-*.tar.zst               |
@@ -76,7 +86,7 @@ The verification linchpin is the agent's **image rewrite** plus a Ready
 |---|---|
 | `zarf` CLI binary | runs the deploy |
 | `archives/zarf-init-arm64-v0.83.0.tar.zst` | `zarf init` (registry + agent) |
-| `archives/zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst` | the package |
+| `zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst` | signed package, including per-component Syft JSON/HTML SBOMs and the Sigstore signature bundle |
 | `archives/kindest_node_v1.36.1_mgmt.tar` | mgmt kind node (host daemon) |
 | `archives/kindest_node_v1.35.0.tar` | CAPD workload nodes (host daemon) |
 | `archives/kindest_haproxy_*.tar` | CAPD load balancer |
@@ -93,8 +103,14 @@ for the deploy host's target OS before crossing the gap.
 Connected (build):
 
 ```sh
-airgap/scripts/build-package.sh   # validate, artifact, images, charts, zarf package create
+ZARF_SIGNING_KEY=/secure/path/cosign.key airgap/scripts/build-package.sh
 ```
+
+The build refuses to create an unsigned deliverable. Zarf generates
+per-component Syft SBOMs by default during `package create`; the script then
+signs the completed archive so its checksum manifest covers those SBOMs and
+all other package contents. CI sets `ZARF_KEYLESS_SIGNING=1` and grants OIDC
+only to the build job.
 
 The `air-gapped` GitHub Actions workflow runs only on upstream `main`, nightly
 or by manual dispatch. It builds the ARM64 bundle, then starts two deployment
@@ -126,11 +142,20 @@ dispatches from consuming the ARM64 runners.
 Gap (deploy) — from `airgap/`:
 
 ```sh
-scripts/stage-and-create-cluster.sh                       # docker load, kind create, seed knr-registry
-zarf init archives/zarf-init-arm64-v0.83.0.tar.zst \
-  --registry-mode=nodeport --components="" --confirm
-zarf package deploy archives/zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst --confirm
+# CI keyless-signed package (default trusted workflow identity)
+scripts/offline-run.sh zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst
+
+# Operator key-signed package
+ZARF_VERIFY_KEY=/transfer/cosign.pub \
+  scripts/offline-run.sh zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst
 ```
+
+Before it creates or changes a cluster, `offline-run.sh` verifies the package
+signature and every archive checksum, extracts the embedded SBOMs with
+signature verification forced, and validates that the JSON files are Syft
+documents. CI performs these steps while public egress is blocked or
+monitored; the extracted SBOM directory is retained with the deployment
+evidence. Any verification failure aborts before staging.
 
 Rehearsal isolation knobs (never touch a live baseline on the same Docker
 daemon): `CLUSTER_NAME`, `AIRGAP_CLUSTER_NAME`, `WORKLOAD_REGISTRY_HOST`,
@@ -138,6 +163,10 @@ daemon): `CLUSTER_NAME`, `AIRGAP_CLUSTER_NAME`, `WORKLOAD_REGISTRY_HOST`,
 
 ## Verification checklist
 
+- The package checksum and signature verify against either the pinned upstream
+  workflow identity or the explicitly supplied public key.
+- Extracted SBOM JSON files reference the Anchore Syft schema and have valid
+  descriptor, artifact, source, and schema structures.
 - `kubectl get pods -A -o jsonpath=...`: every non-kind-baked image is
   prefixed `127.0.0.1:31999/` (the Zarf internal registry).
 - `kubectl -n flux-system get ocirepository`: `url` is
