@@ -57,7 +57,7 @@ spec:
   clusterSelector:
     matchLabels:
       fluxcd: enabled
-      profile: local-host
+      knr-ops.polarsquad.com/environment: local-host
   strategy: ApplyOnce
   resources:
     - kind: ConfigMap
