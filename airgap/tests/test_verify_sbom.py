@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).with_name("verify-sbom.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/verify-sbom.py"
 
 
 class VerifySbomTest(unittest.TestCase):
@@ -29,7 +29,7 @@ class VerifySbomTest(unittest.TestCase):
             {
                 "component.json": {
                     "artifacts": [{"name": "example"}],
-                    "descriptor": {"name": "zarf", "version": "v0.83.0"},
+                    "descriptor": {"name": "zarf", "version": "test-version"},
                     "schema": {
                         "version": "16.0.0",
                         "url": "https://raw.githubusercontent.com/anchore/syft/main/schema/json/schema-16.0.0.json",
