@@ -50,7 +50,7 @@ spec:
   clusterSelector:
     matchLabels:
       fluxcd: enabled
-      profile: local-host
+      knr-ops.polarsquad.com/environment: local-host
   repoURL: oci://knr-registry:5000/charts
   chartName: flux-operator
   version: "0.58.0"
@@ -158,7 +158,7 @@ spec:
   clusterSelector:
     matchLabels:
       fluxcd: enabled
-      profile: local-host
+      knr-ops.polarsquad.com/environment: local-host
   strategy: ApplyOnce
   resources:
     - kind: ConfigMap
