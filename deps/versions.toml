@@ -11,6 +11,7 @@ kind = "0.32"
 helm = "4.2"
 clusterctl = "1.14.0"          # tracks capi
 zarf = "0.83.0"                # CLI pin; zarf.yaml images use v-prefixed refs
+renovate = "44.50.1"           # CLI used by the digest-pinning integration test
 clusterawsadm = "2.13.0"       # tracks capa
 mise = "2026.8.10"
 
@@ -57,6 +58,8 @@ eks_addon_pod_identity_agent = "1.3.10-eksbuild.3"
 # github actions
 gh_checkout_airgap = "7.0.1"
 gh_checkout_validate = "5"
+gh_checkout_renovate_test = "7.0.1"
+gh_setup_node = "7.0.0"
 gh_mise_action = "4.2.3"
 gh_upload_artifact = "7.0.1"
 gh_download_artifact = "8.0.0"
@@ -107,6 +110,12 @@ count = 1
 key = "zarf"
 file = "mise.toml"
 pattern = 'version = "v{version}"'
+count = 1
+
+[[slot]]
+key = "renovate"
+file = ".github/workflows/validate.yml"
+pattern = 'renovate@{version}'
 count = 1
 
 [[slot]]
