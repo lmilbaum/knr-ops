@@ -1,0 +1,12 @@
+[package]
+name = "knr-bootstrap"
+version = "0.1.0"
+edition = "2021"
+description = "One-time imperative bootstrap for the knr-ops management cluster (Rust port of bootstrap.sh)"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
+tempfile = "3"
