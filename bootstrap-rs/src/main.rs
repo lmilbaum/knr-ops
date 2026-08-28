@@ -20,6 +20,10 @@ const GIT_BRANCH: &str = "main";
 const REGISTRY_NAME: &str = "knr-registry";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Chart versions installed imperatively before Flux exists. Keep in sync
+// with deps/versions.toml (flux_operator_chart); the two charts version
+// together upstream, so one constant serves both installs.
+const FLUX_CHART_VERSION: &str = "0.58.0";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -524,6 +528,17 @@ async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     if exists && !cli.recreate {
         println!(">>> Reusing existing kind cluster 'mgmt' (pass --recreate to replace it)...");
         println!(">>> Validating existing cluster health...");
+        if !run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await {
+            // kind get clusters can report mgmt while the kubeconfig lacks
+            // the context (interrupted first create, pruned kubeconfig).
+            // Recover it instead of demanding a destructive --recreate.
+            println!(">>> Context 'kind-mgmt' missing from kubeconfig; exporting it...");
+            if !run_quiet("kind", &["export", "kubeconfig", "--name", "mgmt"]).await {
+                bail!(
+                    "failed to export kubeconfig for existing cluster 'mgmt'; rerun with --recreate to replace it"
+                );
+            }
+        }
         if run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await
             && run_quiet(
                 "kubectl",
@@ -620,19 +635,60 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
         .await?;
         println!("    Registry created and running: localhost:{port}");
     } else {
-        let running = capture_lossy(
+        // Name match alone proves nothing about configuration. Verify the
+        // host-port binding and the kind-network attachment; a stale
+        // container bound elsewhere or detached from the network answers
+        // the host readiness check and then fails in-cluster.
+        let port_matches = extract_workload_port(
+            &capture_lossy(engine, &["port", REGISTRY_NAME, "5000/tcp"]).await,
+        )
+        .is_some_and(|p| p.parse::<u16>().is_ok_and(|p| p == port));
+        let in_kind_network = capture_lossy(
             engine,
-            &["ps", "--filter", &name_filter, "--format", "{{.Names}}"],
+            &[
+                "inspect",
+                REGISTRY_NAME,
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+            ],
         )
         .await
-        .lines()
-        .any(|l| l.trim() == REGISTRY_NAME);
-        if !running {
-            println!("    Restarting stopped registry...");
-            capture(engine, &["start", REGISTRY_NAME]).await?;
-            println!("    Registry restarted: localhost:{port}");
+        .contains("\"kind\"");
+        if !port_matches || !in_kind_network {
+            println!("    Existing registry misconfigured (port or network); recreating...");
+            run(engine, &["rm", "-f", REGISTRY_NAME]).await?;
+            let publish = format!("127.0.0.1:{port}:5000");
+            capture(
+                engine,
+                &[
+                    "run",
+                    "-d",
+                    "--name",
+                    REGISTRY_NAME,
+                    "--network",
+                    "kind",
+                    "-p",
+                    &publish,
+                    "registry:2",
+                ],
+            )
+            .await?;
+            println!("    Registry recreated: localhost:{port}");
         } else {
-            println!("    Registry already running: localhost:{port}");
+            let running = capture_lossy(
+                engine,
+                &["ps", "--filter", &name_filter, "--format", "{{.Names}}"],
+            )
+            .await
+            .lines()
+            .any(|l| l.trim() == REGISTRY_NAME);
+            if !running {
+                println!("    Restarting stopped registry...");
+                capture(engine, &["start", REGISTRY_NAME]).await?;
+                println!("    Registry restarted: localhost:{port}");
+            } else {
+                println!("    Registry already running: localhost:{port}");
+            }
         }
     }
 
@@ -693,6 +749,9 @@ async fn install_flux_operator(registry_config: &Path) -> Result<()> {
     println!(">>> Installing Flux Operator...");
     let cfg = registry_config.to_string_lossy();
     // upgrade --install (script used install): rerun-safe after a partial failure.
+    // --version pins the chart so reruns cannot resolve a different release
+    // (tracks flux_operator_chart in deps/versions.toml, as the HelmRelease in
+    // Git does).
     run(
         "helm",
         &[
@@ -700,6 +759,8 @@ async fn install_flux_operator(registry_config: &Path) -> Result<()> {
             "--install",
             "flux-operator",
             "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator",
+            "--version",
+            FLUX_CHART_VERSION,
             "--namespace",
             "flux-system",
             "--create-namespace",
@@ -765,14 +826,17 @@ async fn install_flux_instance(
     cli: &Cli,
     aws: Option<&AwsContext>,
     registry_config: &Path,
-) -> Result<()> {
+) -> Result<bool> {
     println!(">>> Installing FluxInstance via Helm...");
+    let mut controllers_ready = true;
     let cfg = registry_config.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec![
         "upgrade".into(),
         "--install".into(),
         "flux".into(),
         "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance".into(),
+        "--version".into(),
+        FLUX_CHART_VERSION.into(),
         "--namespace".into(),
         "flux-system".into(),
         // Helm 4's watcher strategy treats the FluxInstance's transient
@@ -848,8 +912,12 @@ async fn install_flux_instance(
     .await?;
 
     // Verify the Flux controllers are running before declaring success.
+    // The script tolerated this wait failing (`|| true`); keep the
+    // tolerance but make the failure visible and stop short of the plain
+    // completion message, which would otherwise report success over
+    // ImagePullBackOff'd controllers.
     println!(">>> Waiting for Flux controllers to be ready...");
-    let _ = run(
+    if run(
         "kubectl",
         &[
             "wait",
@@ -861,8 +929,14 @@ async fn install_flux_instance(
             "--timeout=90s",
         ],
     )
-    .await; // `|| true` in the original script
-    Ok(())
+    .await
+    .is_err()
+    {
+        eprintln!("WARNING: not all Flux controllers became ready within 90s:");
+        let _ = run("kubectl", &["get", "pods", "--namespace", "flux-system"]).await;
+        controllers_ready = false;
+    }
+    Ok(controllers_ready)
 }
 
 /// Poll `kubectl <args>` until it succeeds, up to `attempts` tries 2s apart.
@@ -1054,8 +1128,49 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+/// Resolve on the first SIGINT or SIGTERM (the signals the script's EXIT
+/// trap covered via bash's default signal-to-exit behavior).
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+    tokio::select! {
+        _ = sigint.recv() => {}
+        _ = sigterm.recv() => {}
+    }
+}
+
+/// Env knobs the script reads as `${VAR:-default}`; clap would treat an
+/// empty-string value as a real value (and fail parsing typed ones), so
+/// empty entries are cleared before parsing to keep `VAR=` lines in .env
+/// files working like the script.
+const ENV_KNOBS: &[&str] = &[
+    "KNR_OPS_PROFILE",
+    "REGISTRY_PORT",
+    "REGISTRY_READY_RETRIES",
+    "NODE_READY_TIMEOUT",
+    "LOCAL_RECONCILE_TIMEOUT",
+    "CONTAINER_ENGINE",
+    "GIT_REPO_URL",
+    "GITHUB_TOKEN",
+    "GITHUB_USER",
+    "AGE_KEY_FILE",
+    "AGE_PUBLIC_KEY",
+    "OCI_REPOSITORY",
+    "OCI_TAG",
+];
+
+fn clear_empty_env_knobs() {
+    for var in ENV_KNOBS {
+        if std::env::var(var).is_ok_and(|v| v.is_empty()) {
+            std::env::remove_var(var);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    clear_empty_env_knobs();
     let cli = Cli::parse();
     let profile = cli.profile()?;
     let http = reqwest::Client::builder()
@@ -1065,18 +1180,32 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    let preflight = preflight_checks(&cli, &http).await?;
+    // Ctrl-C and SIGTERM cancel the bootstrap future instead of killing the
+    // process: dropping it runs the Drop-based cleanup (temp kubeconfigs,
+    // the flux logs follower) that the script wired to its EXIT trap.
+    tokio::select! {
+        res = run_bootstrap(&cli, profile, &http) => res,
+        _ = shutdown_signal() => {
+            eprintln!();
+            eprintln!(">>> Interrupted; cleaned up temp files and stopped followers");
+            bail!("interrupted by signal");
+        }
+    }
+}
+
+async fn run_bootstrap(cli: &Cli, profile: Profile, http: &reqwest::Client) -> Result<()> {
+    let preflight = preflight_checks(cli, http).await?;
     println!(
         ">>> Using container engine: {} (socket: {})",
         preflight.engine, preflight.engine_sock
     );
 
     // Step 1: ensure the kind management cluster (reuse by default; --recreate replaces).
-    ensure_kind_cluster(&cli, &preflight.engine_sock).await?;
+    ensure_kind_cluster(cli, &preflight.engine_sock).await?;
 
     // Step 1.5: bootstrap the local container registry (local-host only).
     if profile == Profile::LocalHost {
-        bootstrap_local_registry(&cli, &preflight.engine, &http).await?;
+        bootstrap_local_registry(cli, &preflight.engine, http).await?;
     }
 
     // Anonymous registry config shared by both helm installs; the temp file is
@@ -1098,15 +1227,22 @@ async fn main() -> Result<()> {
     }
 
     // Step 4: install the FluxInstance via Helm.
-    install_flux_instance(&cli, preflight.aws.as_ref(), registry_config.path()).await?;
+    let controllers_ready =
+        install_flux_instance(cli, preflight.aws.as_ref(), registry_config.path()).await?;
 
     // Step 5: watch local-host reconciliation.
     if profile == Profile::LocalHost {
-        watch_local_reconciliation(&cli, &preflight.engine).await?;
+        watch_local_reconciliation(cli, &preflight.engine).await?;
     }
 
     // Done. Everything else is driven by GitOps.
     println!();
+    if !controllers_ready {
+        println!(
+            ">>> Bootstrap finished WITH WARNINGS: Flux controllers were not all ready; \
+             check 'kubectl -n flux-system get pods' before relying on the cluster"
+        );
+    }
     match profile {
         Profile::Aws => {
             let url = preflight
@@ -1169,6 +1305,31 @@ mod tests {
         assert_eq!(cli.age_key_file, PathBuf::from("age.agekey"));
         assert_eq!(cli.oci_repository, "knr-ops");
         assert_eq!(cli.oci_tag, "latest");
+    }
+
+    #[test]
+    fn env_knobs_cover_every_clap_env_binding() {
+        // Every #[arg(env = ...)] binding must appear in ENV_KNOBS so the
+        // empty-string normalization cannot silently miss a new knob.
+        // KNR_OPS_PROFILE is resolved manually (script precedence) and so
+        // has no clap binding; it is still normalized via ENV_KNOBS.
+        let bound: Vec<String> = Cli::command()
+            .get_arguments()
+            .filter_map(|a| a.get_env().map(|e| e.to_string_lossy().into_owned()))
+            .collect();
+        for knob in ENV_KNOBS {
+            assert!(
+                bound.iter().any(|b| b == knob) || *knob == "KNR_OPS_PROFILE",
+                "{knob} missing from clap env bindings"
+            );
+        }
+        for b in &bound {
+            assert!(
+                ENV_KNOBS.contains(&b.as_str()),
+                "{} missing from ENV_KNOBS",
+                b
+            );
+        }
     }
 
     #[test]

@@ -10,5 +10,5 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "signal"] }
 tempfile = "3"
