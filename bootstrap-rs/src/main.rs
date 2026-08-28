@@ -1,7 +1,10 @@
 //! knr-bootstrap – One-time imperative bootstrap for the management cluster.
 //! Everything after this program runs is driven by GitOps (Flux).
 //!
-//! Rust port of `bootstrap.sh`.
+//! Rust port of `bootstrap.sh`. Unlike the script, reruns are safe by
+//! default: an existing healthy 'mgmt' cluster is reused and every step is
+//! idempotent, so a partially failed bootstrap can be resumed by rerunning.
+//! Pass --recreate to delete and rebuild the cluster instead.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,11 +12,14 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 const GIT_BRANCH: &str = "main";
 const REGISTRY_NAME: &str = "knr-registry";
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -35,12 +41,21 @@ impl std::fmt::Display for Profile {
 }
 
 /// One-time imperative bootstrap for the knr-ops management cluster.
+///
+/// Reruns are safe: an existing healthy 'mgmt' cluster is reused and all
+/// steps are idempotent, so a partial failure can be resumed by rerunning.
 #[derive(Parser, Debug)]
 #[command(name = "knr-bootstrap", version, about)]
 struct Cli {
     /// Deployment profile
     #[arg(value_enum, env = "KNR_OPS_PROFILE", default_value = "aws")]
     profile: Profile,
+
+    /// Delete and recreate an existing 'mgmt' cluster instead of reusing it.
+    /// Required when the profile or the kind/registry configuration changed
+    /// since the cluster was created (the reuse path does not detect drift).
+    #[arg(long)]
+    recreate: bool,
 
     /// Host port for the local container registry (local-host profile)
     #[arg(long, env = "REGISTRY_PORT", default_value_t = 5001)]
@@ -49,6 +64,10 @@ struct Cli {
     /// Retries (1s apart) while waiting for the local registry API
     #[arg(long, env = "REGISTRY_READY_RETRIES", default_value_t = 120)]
     registry_ready_retries: u32,
+
+    /// kubectl-style timeout for the management node Ready wait (e.g. 120s)
+    #[arg(long, env = "NODE_READY_TIMEOUT", default_value = "120s")]
+    node_ready_timeout: String,
 
     /// kubectl-style timeout for local reconciliation waits (e.g. 15m)
     #[arg(long, env = "LOCAL_RECONCILE_TIMEOUT", default_value = "15m")]
@@ -87,6 +106,80 @@ struct Cli {
     oci_tag: String,
 }
 
+// ── Pure helpers (unit-tested) ────────────────────────────────────────────────
+
+/// Parse `owner/repo` out of an HTTPS GitHub repository URL.
+fn parse_github_repo(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let repo = rest.trim_end_matches('/').trim_end_matches(".git");
+    let (owner, name) = repo.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(repo)
+}
+
+/// Validate an age key file's three required fields; returns missing field names.
+fn validate_age_key(content: &str) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !content.lines().any(|l| l.starts_with("# created:")) {
+        missing.push("# created: header");
+    }
+    if !content.lines().any(|l| l.starts_with("# public key:")) {
+        missing.push("# public key: comment");
+    }
+    if !content.lines().any(|l| l.starts_with("AGE-SECRET-KEY-")) {
+        missing.push("AGE-SECRET-KEY- line");
+    }
+    missing
+}
+
+/// Extract the public key from a validated age key file.
+fn extract_age_pubkey(content: &str) -> Option<String> {
+    content
+        .lines()
+        .find_map(|l| l.strip_prefix("# public key: "))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract the numeric host port from `<engine> port` output ("0.0.0.0:32771").
+fn extract_workload_port(port_output: &str) -> Option<String> {
+    port_output
+        .lines()
+        .next()
+        .and_then(|l| l.rsplit(':').next())
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+/// Render the kind cluster config, mirroring the script's heredoc.
+fn render_kind_config(profile: Profile, registry_port: u16, engine_sock: &str) -> String {
+    let registry_patch = if profile == Profile::LocalHost {
+        format!(
+            "containerdConfigPatches:\n  - |-\n    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:{registry_port}\"]\n      endpoint = [\"http://{REGISTRY_NAME}:5000\"]\n"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n{registry_patch}nodes:\n  - role: control-plane\n    extraMounts:\n      - hostPath: {engine_sock}\n        containerPath: /var/run/docker.sock\n"
+    )
+}
+
+/// Tools required on PATH for the given profile.
+fn required_tools(profile: Profile) -> Vec<&'static str> {
+    // The binary owns the HTTP checks the script used curl for, so curl is
+    // no longer required. flux and clusterctl are exercised by the
+    // local-host reconciliation watch (Step 5).
+    let mut tools = vec!["kind", "helm", "kubectl"];
+    if profile == Profile::LocalHost {
+        tools.extend(["mise", "flux", "clusterctl"]);
+    }
+    tools
+}
+
 // ── Process helpers ───────────────────────────────────────────────────────────
 
 /// Is `cmd` an executable file somewhere on PATH?
@@ -94,10 +187,7 @@ fn command_exists(cmd: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(cmd);
-        is_executable_file(&candidate)
-    })
+    std::env::split_paths(&path).any(|dir| is_executable_file(&dir.join(cmd)))
 }
 
 #[cfg(unix)]
@@ -115,6 +205,10 @@ fn is_executable_file(p: &Path) -> bool {
 }
 
 /// Run a command with inherited stdio; error if it exits nonzero.
+///
+/// Secret safety: no secret material is ever passed on argv anywhere in this
+/// program (secrets travel via stdin manifests), so command lines are safe to
+/// echo verbatim in errors.
 async fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let status = Command::new(cmd)
         .args(args)
@@ -166,6 +260,8 @@ async fn capture_lossy(cmd: &str, args: &[&str]) -> String {
 }
 
 /// Run a command with `input` piped to stdin and stdio otherwise inherited.
+/// Error messages include argv only, never stdin content, so manifests
+/// containing secret material are safe to pass here.
 async fn run_with_stdin(cmd: &str, args: &[&str], input: &str) -> Result<()> {
     let mut child = Command::new(cmd)
         .args(args)
@@ -185,6 +281,12 @@ async fn run_with_stdin(cmd: &str, args: &[&str], input: &str) -> Result<()> {
     Ok(())
 }
 
+/// Apply a Kubernetes manifest (JSON) via `kubectl apply -f -`. Idempotent,
+/// and keeps secret values off argv.
+async fn kubectl_apply(manifest: &serde_json::Value) -> Result<()> {
+    run_with_stdin("kubectl", &["apply", "-f", "-"], &manifest.to_string()).await
+}
+
 /// Kills the wrapped child process when dropped (best-effort).
 struct ChildGuard(tokio::process::Child);
 
@@ -200,7 +302,7 @@ struct AwsContext {
     git_repo_url: String,
     github_user: String,
     github_token: String,
-    age_key_file: PathBuf,
+    age_key_content: String,
     age_pubkey: String,
 }
 
@@ -211,14 +313,13 @@ struct Preflight {
 }
 
 async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight> {
-    for cmd in ["curl", "kind", "helm", "kubectl"] {
-        if !command_exists(cmd) {
-            bail!("{cmd} not found in PATH");
-        }
-    }
-
-    if cli.profile == Profile::LocalHost && !command_exists("mise") {
-        bail!("mise not found in PATH (required to publish the initial OCI artifact)");
+    // Report every missing tool at once instead of failing on the first.
+    let missing: Vec<&str> = required_tools(cli.profile)
+        .into_iter()
+        .filter(|t| !command_exists(t))
+        .collect();
+    if !missing.is_empty() {
+        bail!("missing required tools in PATH: {}", missing.join(", "));
     }
 
     let aws = if cli.profile == Profile::Aws {
@@ -270,7 +371,9 @@ async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight
             .to_string();
             if sock.is_empty() {
                 sock = "/run/podman/podman.sock".to_string();
-                eprintln!(">>> WARNING: Could not detect the podman API socket path; assuming {sock}");
+                eprintln!(
+                    ">>> WARNING: Could not detect the podman API socket path; assuming {sock}"
+                );
             }
             sock
         }
@@ -289,20 +392,19 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
         .github_token
         .clone()
         .context("GITHUB_TOKEN must be set (a PAT with read access to the repo)")?;
-    let git_repo_url = cli.git_repo_url.clone().context("GIT_REPO_URL must be set")?;
+    let git_repo_url = cli
+        .git_repo_url
+        .clone()
+        .context("GIT_REPO_URL must be set")?;
 
     // GITHUB_USER is used in the Flux GitHub secret for repo clone authentication.
     let github_user = cli.github_user.clone();
 
-    let repo = git_repo_url
-        .strip_prefix("https://github.com/")
-        .filter(|rest| rest.trim_end_matches('/').trim_end_matches(".git").contains('/'))
+    let github_repo = parse_github_repo(&git_repo_url)
         .context("GIT_REPO_URL must be an HTTPS GitHub repository URL")?;
-    let github_repo = repo.trim_end_matches('/').trim_end_matches(".git");
 
     let branch_path = GIT_BRANCH.replace('/', "%2F");
-    let url =
-        format!("https://api.github.com/repos/{github_repo}/branches/{branch_path}");
+    let url = format!("https://api.github.com/repos/{github_repo}/branches/{branch_path}");
     let status = http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -317,7 +419,7 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
         );
     }
 
-    let age_key_file = cli.age_key_file.clone();
+    let age_key_file = &cli.age_key_file;
     if !age_key_file.is_file() {
         bail!(
             "age key file not found at '{}'.\n       Generate one with:  mise run sops-keygen\n       and add its PUBLIC key to .sops.yaml. See docs/secrets.md.",
@@ -327,18 +429,9 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
 
     // Validate age key file format first (before attempting to extract the
     // public key). This avoids silently proceeding with a malformed file.
-    let age_content = std::fs::read_to_string(&age_key_file)
+    let age_key_content = std::fs::read_to_string(age_key_file)
         .with_context(|| format!("failed to read '{}'", age_key_file.display()))?;
-    let mut missing_fields: Vec<&str> = Vec::new();
-    if !age_content.lines().any(|l| l.starts_with("# created:")) {
-        missing_fields.push("# created: header");
-    }
-    if !age_content.lines().any(|l| l.starts_with("# public key:")) {
-        missing_fields.push("# public key: comment");
-    }
-    if !age_content.lines().any(|l| l.starts_with("AGE-SECRET-KEY-")) {
-        missing_fields.push("AGE-SECRET-KEY- line");
-    }
+    let missing_fields = validate_age_key(&age_key_content);
     if !missing_fields.is_empty() {
         bail!(
             "'{}' is not a valid age key file.\n       Missing: {}",
@@ -352,13 +445,7 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
         .age_public_key
         .clone()
         .filter(|k| !k.is_empty())
-        .or_else(|| {
-            age_content
-                .lines()
-                .find_map(|l| l.strip_prefix("# public key: "))
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
+        .or_else(|| extract_age_pubkey(&age_key_content))
         .with_context(|| {
             format!(
                 "Cannot determine age public key from '{}' or from AGE_PUBLIC_KEY env var.\n       Set AGE_PUBLIC_KEY in .env, or regenerate the key with: mise run sops-keygen",
@@ -370,39 +457,59 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
         git_repo_url,
         github_user,
         github_token,
-        age_key_file,
+        age_key_content,
         age_pubkey,
     })
 }
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
-async fn create_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
-    println!(">>> Creating kind cluster 'mgmt'...");
-
-    // Check if the cluster already exists and delete it (idempotent).
+/// Ensure the kind 'mgmt' cluster exists and is healthy.
+///
+/// Default: reuse an existing cluster after validating that its context is
+/// reachable and all nodes go Ready; this makes reruns non-destructive and
+/// lets a partially failed bootstrap resume. With --recreate (or when no
+/// cluster exists) the cluster is (re)built from the rendered config.
+async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     let clusters = capture_lossy("kind", &["get", "clusters"]).await;
-    if clusters.lines().any(|l| l.trim() == "mgmt") {
-        println!(">>> Cluster 'mgmt' already exists – recreating...");
+    let exists = clusters.lines().any(|l| l.trim() == "mgmt");
+    let node_ready_timeout = format!("--timeout={}", cli.node_ready_timeout);
+
+    if exists && !cli.recreate {
+        println!(">>> Reusing existing kind cluster 'mgmt' (pass --recreate to replace it)...");
+        println!(">>> Validating existing cluster health...");
+        if run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await
+            && run_quiet(
+                "kubectl",
+                &[
+                    "wait",
+                    "--for=condition=Ready",
+                    "node",
+                    "--all",
+                    &node_ready_timeout,
+                ],
+            )
+            .await
+        {
+            println!(">>> Existing cluster 'mgmt' is healthy; continuing.");
+            return Ok(());
+        }
+        bail!(
+            "existing kind cluster 'mgmt' is not healthy (context unreachable or nodes not Ready within {}); rerun with --recreate to replace it",
+            cli.node_ready_timeout
+        );
+    }
+
+    if exists {
+        println!(">>> Cluster 'mgmt' exists and --recreate was given – recreating...");
         run("kind", &["delete", "cluster", "--name", "mgmt"]).await?;
     }
 
+    println!(">>> Creating kind cluster 'mgmt'...");
     // Mount the host's container engine socket into the kind node at the
     // standard Docker socket path so in-cluster components can reach a
     // Docker-compatible API whether the backend is Docker or Podman.
-    let registry_patch = if cli.profile == Profile::LocalHost {
-        format!(
-            "containerdConfigPatches:\n  - |-\n    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:{port}\"]\n      endpoint = [\"http://{REGISTRY_NAME}:5000\"]\n",
-            port = cli.registry_port
-        )
-    } else {
-        String::new()
-    };
-
-    let kind_config = format!(
-        "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n{registry_patch}nodes:\n  - role: control-plane\n    extraMounts:\n      - hostPath: {engine_sock}\n        containerPath: /var/run/docker.sock\n"
-    );
-
+    let kind_config = render_kind_config(cli.profile, cli.registry_port, engine_sock);
     run_with_stdin(
         "kind",
         &["create", "cluster", "--name", "mgmt", "--config", "-"],
@@ -415,7 +522,13 @@ async fn create_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     run("kubectl", &["config", "use-context", "kind-mgmt"]).await?;
     run(
         "kubectl",
-        &["wait", "--for=condition=Ready", "node", "--all", "--timeout=120s"],
+        &[
+            "wait",
+            "--for=condition=Ready",
+            "node",
+            "--all",
+            &node_ready_timeout,
+        ],
     )
     .await?;
     Ok(())
@@ -428,7 +541,14 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
 
     let exists = capture_lossy(
         engine,
-        &["ps", "-a", "--filter", &name_filter, "--format", "{{.Names}}"],
+        &[
+            "ps",
+            "-a",
+            "--filter",
+            &name_filter,
+            "--format",
+            "{{.Names}}",
+        ],
     )
     .await
     .lines()
@@ -440,7 +560,14 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
         capture(
             engine,
             &[
-                "run", "-d", "--name", REGISTRY_NAME, "--network", "kind", "-p", &publish,
+                "run",
+                "-d",
+                "--name",
+                REGISTRY_NAME,
+                "--network",
+                "kind",
+                "-p",
+                &publish,
                 "registry:2",
             ],
         )
@@ -482,16 +609,16 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
         bail!("local registry did not become ready at localhost:{port}");
     }
 
-    // Tell the cluster about the local registry.
-    let registry_literal = format!("registry-url={REGISTRY_NAME}:5000");
-    run(
-        "kubectl",
-        &[
-            "create", "configmap", "local-registry-config",
-            "--from-literal", &registry_literal,
-            "--namespace", "kube-system",
-        ],
-    )
+    // Tell the cluster about the local registry (apply = rerun-safe).
+    kubectl_apply(&json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "local-registry-config",
+            "namespace": "kube-system",
+        },
+        "data": { "registry-url": format!("{REGISTRY_NAME}:5000") },
+    }))
     .await?;
 
     println!(">>> Publishing initial OCI artifact from the local Git checkout...");
@@ -507,64 +634,73 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
 async fn install_flux_operator(registry_config: &Path) -> Result<()> {
     println!(">>> Installing Flux Operator...");
     let cfg = registry_config.to_string_lossy();
+    // upgrade --install (script used install): rerun-safe after a partial failure.
     run(
         "helm",
         &[
-            "install", "flux-operator",
+            "upgrade",
+            "--install",
+            "flux-operator",
             "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator",
-            "--namespace", "flux-system",
+            "--namespace",
+            "flux-system",
             "--create-namespace",
             "--wait",
-            "--registry-config", &cfg,
+            "--timeout",
+            "10m",
+            "--registry-config",
+            &cfg,
         ],
     )
     .await
 }
 
 async fn create_aws_secrets(aws: &AwsContext) -> Result<()> {
+    // Both secrets are applied as manifests on stdin: idempotent on rerun,
+    // and no secret material ever appears on argv or in error messages.
+
     // Basic-auth secret consumed by Flux's source-controller to clone the repo.
     println!(">>> Creating GitHub PAT credentials secret in flux-system...");
-    let username = format!("username={}", aws.github_user);
-    let password = format!("password={}", aws.github_token);
-    run(
-        "kubectl",
-        &[
-            "create", "secret", "generic", "flux-github-pat",
-            "--namespace", "flux-system",
-            "--from-literal", &username,
-            "--from-literal", &password,
-        ],
-    )
+    kubectl_apply(&json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": { "name": "flux-github-pat", "namespace": "flux-system" },
+        "type": "Opaque",
+        "stringData": {
+            "username": aws.github_user,
+            "password": aws.github_token,
+        },
+    }))
     .await?;
 
     // Flux's kustomize-controller uses this key to decrypt *.sops.yaml
     // manifests during reconciliation. Flux scans the Secret for keys matching
     // `keys.<public-key>.agekey`.
     println!(">>> Creating sops-age decryption secret in flux-system...");
-    // Remove any existing sops-age secret to avoid stale keys from previous runs.
+    // Remove any existing sops-age secret to avoid stale keys from previous
+    // bootstrap runs (apply alone would merge old key entries).
     run(
         "kubectl",
         &[
-            "delete", "secret", "sops-age", "-n", "flux-system", "--ignore-not-found",
+            "delete",
+            "secret",
+            "sops-age",
+            "-n",
+            "flux-system",
+            "--ignore-not-found",
         ],
     )
     .await?;
-    let from_file = format!(
-        "keys.{}.agekey={}",
-        aws.age_pubkey,
-        aws.age_key_file.display()
-    );
-    let manifest = capture(
-        "kubectl",
-        &[
-            "create", "secret", "generic", "sops-age",
-            "--namespace", "flux-system",
-            "--from-file", &from_file,
-            "--dry-run=client", "-o", "yaml",
-        ],
-    )
-    .await?;
-    run_with_stdin("kubectl", &["apply", "-f", "-"], &manifest).await
+    kubectl_apply(&json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": { "name": "sops-age", "namespace": "flux-system" },
+        "type": "Opaque",
+        "stringData": {
+            format!("keys.{}.agekey", aws.age_pubkey): aws.age_key_content,
+        },
+    }))
+    .await
 }
 
 async fn install_flux_instance(
@@ -575,43 +711,61 @@ async fn install_flux_instance(
     println!(">>> Installing FluxInstance via Helm...");
     let cfg = registry_config.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec![
-        "upgrade".into(), "--install".into(), "flux".into(),
+        "upgrade".into(),
+        "--install".into(),
+        "flux".into(),
         "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance".into(),
-        "--namespace".into(), "flux-system".into(),
+        "--namespace".into(),
+        "flux-system".into(),
         // Helm 4's watcher strategy treats the FluxInstance's transient
         // InProgress condition as a terminal failure. Use the legacy
         // chart-resource wait here, then wait explicitly for the
         // operator-owned Ready condition below.
         "--wait=legacy".into(),
-        "--timeout".into(), "10m".into(),
-        "--set".into(), "instance.cluster.type=kubernetes".into(),
-        "--set".into(), "instance.cluster.size=small".into(),
-        "--set".into(), "instance.cluster.multitenant=false".into(),
-        "--set".into(), "instance.cluster.networkPolicy=true".into(),
-        "--set".into(), "instance.cluster.domain=cluster.local".into(),
-        "--registry-config".into(), cfg,
+        "--timeout".into(),
+        "10m".into(),
+        "--set".into(),
+        "instance.cluster.type=kubernetes".into(),
+        "--set".into(),
+        "instance.cluster.size=small".into(),
+        "--set".into(),
+        "instance.cluster.multitenant=false".into(),
+        "--set".into(),
+        "instance.cluster.networkPolicy=true".into(),
+        "--set".into(),
+        "instance.cluster.domain=cluster.local".into(),
+        "--registry-config".into(),
+        cfg,
     ];
 
     match aws {
         Some(aws) => {
             args.extend([
-                "--set".into(), "instance.sync.kind=GitRepository".into(),
-                "--set".into(), format!("instance.sync.url={}", aws.git_repo_url),
-                "--set".into(), "instance.sync.ref=refs/heads/main".into(),
-                "--set".into(), "instance.sync.path=mgmt/aws".into(),
-                "--set".into(), "instance.sync.pullSecret=flux-github-pat".into(),
+                "--set".into(),
+                "instance.sync.kind=GitRepository".into(),
+                "--set".into(),
+                format!("instance.sync.url={}", aws.git_repo_url),
+                "--set".into(),
+                "instance.sync.ref=refs/heads/main".into(),
+                "--set".into(),
+                "instance.sync.path=mgmt/aws".into(),
+                "--set".into(),
+                "instance.sync.pullSecret=flux-github-pat".into(),
             ]);
         }
         None => {
             args.extend([
-                "--set".into(), "instance.sync.kind=OCIRepository".into(),
+                "--set".into(),
+                "instance.sync.kind=OCIRepository".into(),
                 "--set".into(),
                 format!(
                     "instance.sync.url=oci://{REGISTRY_NAME}:5000/{}",
                     cli.oci_repository
                 ),
-                "--set".into(), format!("instance.sync.ref={}", cli.oci_tag),
-                "--set".into(), "instance.sync.path=mgmt/local-host".into(),
+                "--set".into(),
+                format!("instance.sync.ref={}", cli.oci_tag),
+                "--set".into(),
+                "instance.sync.path=mgmt/local-host".into(),
                 "--set-json".into(),
                 r#"instance.kustomize.patches=[{"patch":"- op: add\n  path: /spec/insecure\n  value: true","target":{"kind":"OCIRepository"}}]"#.into(),
             ]);
@@ -625,8 +779,10 @@ async fn install_flux_instance(
     run(
         "kubectl",
         &[
-            "wait", "fluxinstance/flux",
-            "--namespace", "flux-system",
+            "wait",
+            "fluxinstance/flux",
+            "--namespace",
+            "flux-system",
             "--for=condition=Ready",
             "--timeout=10m",
         ],
@@ -638,7 +794,11 @@ async fn install_flux_instance(
     let _ = run(
         "kubectl",
         &[
-            "wait", "--namespace", "flux-system", "--for=condition=ready", "pod",
+            "wait",
+            "--namespace",
+            "flux-system",
+            "--for=condition=ready",
+            "pod",
             "--selector=app.kubernetes.io/part-of=flux",
             "--timeout=90s",
         ],
@@ -647,7 +807,7 @@ async fn install_flux_instance(
     Ok(())
 }
 
-/// Poll `kubectl get <args>` until it succeeds, up to `attempts` tries 2s apart.
+/// Poll `kubectl <args>` until it succeeds, up to `attempts` tries 2s apart.
 async fn wait_for_resource(args: &[&str], attempts: u32) -> bool {
     for _ in 0..attempts {
         if run_quiet("kubectl", args).await {
@@ -666,7 +826,11 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     // appear before asking kubectl to wait for readiness.
     if !wait_for_resource(
         &[
-            "get", "kustomization", "flux-apps", "--namespace", "flux-system",
+            "get",
+            "kustomization",
+            "flux-apps",
+            "--namespace",
+            "flux-system",
         ],
         60,
     )
@@ -682,8 +846,10 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     if run(
         "kubectl",
         &[
-            "wait", "kustomization/flux-apps",
-            "--namespace", "flux-system",
+            "wait",
+            "kustomization/flux-apps",
+            "--namespace",
+            "flux-system",
             "--for=condition=Ready",
             &timeout_arg,
         ],
@@ -701,8 +867,8 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
 
     println!();
     println!(">>> Workload cluster Flux reconciliation errors");
-    let workload_kubeconfig = tempfile::NamedTempFile::new()
-        .context("failed to create temp kubeconfig")?;
+    let workload_kubeconfig =
+        tempfile::NamedTempFile::new().context("failed to create temp kubeconfig")?;
     let kubeconfig_path = workload_kubeconfig.path().to_string_lossy().into_owned();
 
     let kubeconfig_content =
@@ -710,14 +876,7 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     std::fs::write(workload_kubeconfig.path(), kubeconfig_content)?;
 
     let port_output = capture(engine, &["port", "local-workload-lb", "6443/tcp"]).await?;
-    let workload_port = port_output
-        .lines()
-        .next()
-        .and_then(|l| l.rsplit(':').next())
-        .map(str::trim)
-        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-        .map(str::to_string);
-    let Some(workload_port) = workload_port else {
+    let Some(workload_port) = extract_workload_port(&port_output) else {
         bail!("cannot determine the local-workload API server port");
     };
 
@@ -726,7 +885,9 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     capture(
         "kubectl",
         &[
-            "config", "set-cluster", "local-workload",
+            "config",
+            "set-cluster",
+            "local-workload",
             &format!("--server={server}"),
             &kubeconfig_flag,
         ],
@@ -735,9 +896,13 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
 
     if !wait_for_resource(
         &[
-            "--kubeconfig", &kubeconfig_path,
-            "get", "kustomization", "flux-system",
-            "--namespace", "flux-system",
+            "--kubeconfig",
+            &kubeconfig_path,
+            "get",
+            "kustomization",
+            "flux-system",
+            "--namespace",
+            "flux-system",
         ],
         60,
     )
@@ -747,8 +912,12 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
         let _ = run(
             "kubectl",
             &[
-                "--kubeconfig", &kubeconfig_path,
-                "get", "pods", "--namespace", "flux-system",
+                "--kubeconfig",
+                &kubeconfig_path,
+                "get",
+                "pods",
+                "--namespace",
+                "flux-system",
             ],
         )
         .await;
@@ -759,9 +928,12 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     run(
         "kubectl",
         &[
-            "--kubeconfig", &kubeconfig_path,
-            "wait", "pod",
-            "--namespace", "flux-system",
+            "--kubeconfig",
+            &kubeconfig_path,
+            "wait",
+            "pod",
+            "--namespace",
+            "flux-system",
             "--selector=app.kubernetes.io/part-of=flux",
             "--for=condition=Ready",
             &timeout_arg,
@@ -773,7 +945,8 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     let flux_logs = Command::new("flux")
         .args([
             "logs",
-            "--kubeconfig", &kubeconfig_path,
+            "--kubeconfig",
+            &kubeconfig_path,
             "--all-namespaces",
             "--follow",
             "--level=error",
@@ -786,9 +959,12 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     if run(
         "kubectl",
         &[
-            "--kubeconfig", &kubeconfig_path,
-            "wait", "kustomization/flux-system",
-            "--namespace", "flux-system",
+            "--kubeconfig",
+            &kubeconfig_path,
+            "wait",
+            "kustomization/flux-system",
+            "--namespace",
+            "flux-system",
             "--for=condition=Ready",
             &timeout_arg,
         ],
@@ -803,8 +979,10 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
         let _ = run(
             "flux",
             &[
-                "get", "kustomizations",
-                "--kubeconfig", &kubeconfig_path,
+                "get",
+                "kustomizations",
+                "--kubeconfig",
+                &kubeconfig_path,
                 "--all-namespaces",
             ],
         )
@@ -823,6 +1001,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let http = reqwest::Client::builder()
         .user_agent(concat!("knr-bootstrap/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .timeout(HTTP_REQUEST_TIMEOUT)
         .build()
         .context("failed to build HTTP client")?;
 
@@ -832,8 +1012,8 @@ async fn main() -> Result<()> {
         preflight.engine, preflight.engine_sock
     );
 
-    // Step 1: create the kind management cluster.
-    create_kind_cluster(&cli, &preflight.engine_sock).await?;
+    // Step 1: ensure the kind management cluster (reuse by default; --recreate replaces).
+    ensure_kind_cluster(&cli, &preflight.engine_sock).await?;
 
     // Step 1.5: bootstrap the local container registry (local-host only).
     if cli.profile == Profile::LocalHost {
@@ -879,7 +1059,9 @@ async fn main() -> Result<()> {
             println!(">>> Watch progress with: flux get kustomizations --watch");
         }
         Profile::LocalHost => {
-            println!(">>> Local-host profile complete: Flux is reconciling from the local OCI artifact");
+            println!(
+                ">>> Local-host profile complete: Flux is reconciling from the local OCI artifact"
+            );
             println!(
                 ">>> Local registry: localhost:{port} (cluster endpoint: {REGISTRY_NAME}:5000)",
                 port = cli.registry_port
