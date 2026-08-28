@@ -35,7 +35,7 @@ if ! python3 deps/scripts/check.py --forbid; then
   echo "    FAILED: dependency drift" >&2
   fail=1
 fi
-for script in bootstrap.sh teardown.sh; do
+for script in bootstrap.sh bootstrap-common.sh pivot.sh teardown.sh; do
   echo "==> bash -n $script"
   if ! bash -n "$script"; then
     echo "    FAILED: $script" >&2
@@ -84,8 +84,42 @@ done
 """
 
 [tasks.bootstrap]
-description = "Bootstrap the management kind cluster and hand off to Flux/GitOps"
+description = "Bootstrap the management kind cluster, hand off to Flux/GitOps, then pivot to the self-managed management cluster"
 run = "./bootstrap.sh"
+
+[tasks.pivot]
+description = "Pivot the management cluster from local kind to the CAPI-managed management cluster (aws=CAPA/EKS, local-host=CAPD)"
+run = "./pivot.sh"
+
+[tasks.mgmt-kubeconfig]
+description = "Export the management-cluster kubeconfig to ~/.kube/knr-ops-mgmt.yaml"
+run = '''
+MGMT_CLUSTER="${MGMT_CLUSTER:-$([ "${KNR_OPS_PROFILE:-aws}" = local-host ] && echo local-management || echo eu-north-1-management)}"
+MGMT_KUBECONFIG="${MGMT_KUBECONFIG:-$HOME/.kube/knr-ops-mgmt.yaml}"
+clusterctl get kubeconfig "$MGMT_CLUSTER" -n default > "$MGMT_KUBECONFIG"
+chmod 600 "$MGMT_KUBECONFIG"
+if [ "${KNR_OPS_PROFILE:-aws}" = local-host ]; then
+  # CAPD records the load balancer's container-network IP, which is not
+  # routable from macOS. Point at the port published on localhost instead.
+  engine="${CONTAINER_ENGINE:-docker}"
+  endpoint="$($engine port "${MGMT_CLUSTER}-lb" 6443/tcp | head -1)"
+  port="${endpoint##*:}"
+  case "$port" in
+    ''|*[!0-9]*)
+      echo "ERROR: cannot determine the ${MGMT_CLUSTER} API server port" >&2
+      exit 1
+      ;;
+  esac
+  kubectl config set-cluster "$MGMT_CLUSTER" \
+    --server="https://127.0.0.1:${port}" \
+    --kubeconfig="$MGMT_KUBECONFIG" >/dev/null
+fi
+kubectl --kubeconfig "$MGMT_KUBECONFIG" config rename-context \
+  "$(kubectl --kubeconfig "$MGMT_KUBECONFIG" config current-context)" \
+  knr-ops-mgmt >/dev/null
+echo "Wrote ${MGMT_KUBECONFIG}"
+echo "Use with: KUBECONFIG=${MGMT_KUBECONFIG} kubectl get clusters"
+'''
 
 [tasks.aws-credentials]
 description = "Export AWS credentials as a profile string for SOPS-encrypted secrets"

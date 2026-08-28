@@ -231,7 +231,7 @@
       "description": "zarf.yaml image refs (registry with optional port)",
       "managerFilePatterns": ["/(^|/)airgap/zarf\\.yaml$/"],
       "matchStrings": [
-        "- (?<depName>[a-zA-Z0-9._-]+(?::[0-9]+)?/[a-zA-Z0-9._/-]+):(?<currentValue>[^\\s@]+)"
+        "- (?<depName>[a-zA-Z0-9._-]+(?::[0-9]+)?/[a-zA-Z0-9._/-]+):(?<currentValue>[^\\s@]+)(@(?<currentDigest>sha256:[a-f0-9]+))?"
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
@@ -244,6 +244,12 @@
     // ── end customManagers ────────────────────────────────────────────────
   ],
   "packageRules": [
+    {
+      "description": "Pin air-gap container images by digest while retaining readable tags",
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["airgap/images.txt", "airgap/zarf.yaml"],
+      "pinDigests": true
+    },
     {
       "description": "No automerge anywhere; merges stay manual (issue #74)",
       "matchUpdateTypes": ["major", "minor", "patch", "digest", "pin", "pinDigest"],
