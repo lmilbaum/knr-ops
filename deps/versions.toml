@@ -120,3 +120,17 @@ key = "mise"
 file = "mise.toml"
 pattern = 'min_version = "{version}"'
 count = 1
+
+# pivot.sh installs these imperatively in the management cluster before Flux
+# exists; the literals must track the catalog like the HelmReleases do.
+[[slot]]
+key = "cert_manager"
+file = "pivot.sh"
+pattern = 'CERT_MANAGER_VERSION="{version}"'
+count = 1
+
+[[slot]]
+key = "capi_operator_chart"
+file = "pivot.sh"
+pattern = 'CAPI_OPERATOR_VERSION="{version}"'
+count = 1
