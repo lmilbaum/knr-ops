@@ -1,6 +1,5 @@
 # Unit tests for the inventory-matching logic in check-inventory.py.
-# Run with: python3 -m unittest discover airgap/scripts
-# or: python3 -m unittest airgap/scripts/test_check_inventory.py
+# Run with: python3 -m unittest discover -s airgap/tests -p 'test_*.py'
 # Pure logic tests only; no kustomize, cluster, or network access.
 
 import importlib.util
@@ -8,7 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent / "check-inventory.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/check-inventory.py"
 spec = importlib.util.spec_from_file_location("check_inventory", SCRIPT)
 assert spec is not None and spec.loader is not None
 ci = importlib.util.module_from_spec(spec)

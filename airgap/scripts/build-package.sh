@@ -6,7 +6,8 @@
 #   2. build-config-artifact.sh (trimmed airgap tree -> configured OCI registry)
 #   3. stage the Zarf init package, host-daemon images, workload-node pod
 #      images, and OCI charts into archives/
-#   4. zarf package create
+#   4. zarf package create (including per-component Syft SBOMs)
+#   5. sign the completed package
 #
 # Output: zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst next to airgap/.
 set -euo pipefail
@@ -15,10 +16,19 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
-echo "==> 1/4 validate"
+if [ -n "${ZARF_SIGNING_KEY:-}" ] && [ "${ZARF_KEYLESS_SIGNING:-0}" = "1" ]; then
+  echo "ERROR: set only one of ZARF_SIGNING_KEY or ZARF_KEYLESS_SIGNING=1" >&2
+  exit 1
+fi
+if [ -z "${ZARF_SIGNING_KEY:-}" ] && [ "${ZARF_KEYLESS_SIGNING:-0}" != "1" ]; then
+  echo "ERROR: package signing is required; set ZARF_SIGNING_KEY or ZARF_KEYLESS_SIGNING=1" >&2
+  exit 1
+fi
+
+echo "==> 1/5 validate"
 mise run validate
 
-echo "==> 2/4 config artifact"
+echo "==> 2/5 config artifact"
 "$SCRIPT_DIR/build-config-artifact.sh"
 
 # The package must pull the same config artifact that the preceding step
@@ -50,7 +60,7 @@ if [ -n "${OCI_REGISTRY:-}" ]; then
   echo "    zarf config artifact: ${CONFIG_ARTIFACT}"
 fi
 
-echo "==> 3/4 offline host assets, workload-node images, and OCI charts"
+echo "==> 3/5 offline host assets, workload-node images, and OCI charts"
 mkdir -p airgap/archives
 
 mise x -- zarf tools download-init \
@@ -96,9 +106,26 @@ helm pull oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator --version 0.5
 helm pull oci://ghcr.io/stefanprodan/charts/podinfo --version 6.14.0 -d airgap/archives/charts
 echo "    staged charts: $(ls airgap/archives/charts/)"
 
-echo "==> 4/4 zarf package create"
+echo "==> 4/5 zarf package create (SBOM generation enabled)"
 cd airgap
 mise x -- zarf package create . --confirm
 
+PACKAGE="$PWD/zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst"
+if [ ! -f "$PACKAGE" ]; then
+  echo "ERROR: expected Zarf package was not created: $PACKAGE" >&2
+  exit 1
+fi
+
+echo "==> 5/5 sign package"
+if [ "${ZARF_KEYLESS_SIGNING:-0}" = "1" ]; then
+  mise x -- zarf package sign "$PACKAGE" --keyless --confirm
+else
+  sign_args=(--signing-key "$ZARF_SIGNING_KEY")
+  if [ -n "${ZARF_SIGNING_KEY_PASS:-}" ]; then
+    sign_args+=(--signing-key-pass "$ZARF_SIGNING_KEY_PASS")
+  fi
+  mise x -- zarf package sign "$PACKAGE" "${sign_args[@]}"
+fi
+
 echo "==> Built:"
-ls -lh zarf-package-knr-ops-airgap-*.tar.zst
+ls -lh "$PACKAGE"

@@ -51,8 +51,8 @@ jobs:
           sudo mv kustomize /usr/local/bin/
           kustomize version
 
-      - name: Unit-test inventory check
-        run: python3 -m unittest discover -s airgap/scripts -p 'test_*.py' -v
+      - name: Unit-test airgap scripts
+        run: python3 -m unittest discover -s airgap/tests -p 'test_*.py' -v
 
       - name: Check airgap image inventory
         run: python3 airgap/scripts/check-inventory.py
