@@ -152,10 +152,12 @@ ZARF_VERIFY_KEY=/transfer/cosign.pub \
 
 Before it creates or changes a cluster, `offline-run.sh` verifies the package
 signature and every archive checksum, extracts the embedded SBOMs with
-signature verification forced, and validates that the JSON files are Syft
-documents. CI performs these steps while public egress is blocked or
-monitored; the extracted SBOM directory is retained with the deployment
-evidence. Any verification failure aborts before staging.
+signature verification forced, and decodes each document with syft's own
+decoder (`zarf tools sbom convert`, the syft CLI vendored inside the zarf
+binary) so invalid Syft JSON fails the run. CI performs these steps while
+public egress is blocked or monitored; the extracted SBOM directory is
+retained with the deployment evidence. Any verification failure aborts
+before staging.
 
 Rehearsal isolation knobs (never touch a live baseline on the same Docker
 daemon): `CLUSTER_NAME`, `AIRGAP_CLUSTER_NAME`, `WORKLOAD_REGISTRY_HOST`,
@@ -165,8 +167,9 @@ daemon): `CLUSTER_NAME`, `AIRGAP_CLUSTER_NAME`, `WORKLOAD_REGISTRY_HOST`,
 
 - The package checksum and signature verify against either the pinned upstream
   workflow identity or the explicitly supplied public key.
-- Extracted SBOM JSON files reference the Anchore Syft schema and have valid
-  descriptor, artifact, source, and schema structures.
+- Extracted SBOM JSON files are decoded by syft itself (`zarf tools sbom
+  convert`); every document must decode as a Syft SBOM, and at least one
+  document must be present.
 - `kubectl get pods -A -o jsonpath=...`: every non-kind-baked image is
   prefixed `127.0.0.1:31999/` (the Zarf internal registry).
 - `kubectl -n flux-system get ocirepository`: `url` is
