@@ -41,8 +41,10 @@ MGMT_KUBECONFIG="${MGMT_KUBECONFIG:-$HOME/.kube/knr-ops-mgmt.yaml}"
 PIVOT_SKIP_DELETE="${PIVOT_SKIP_DELETE:-0}"
 
 # Chart versions installed imperatively in the target before Flux exists.
-# Keep in sync with deps/versions.toml (cert_manager, capi_operator_chart);
-# both are slot-validated by `mise run deps-check`.
+# Chart versions installed imperatively before Flux exists; keep in sync with
+# the HelmReleases in mgmt/<env>/infrastructure/ (cert-manager, capi-operator)
+# so Flux adopts these installs without drift. Renovate updates these pins
+# together with the manifest chart versions (platform-charts group).
 CERT_MANAGER_VERSION="1.21.1"
 CAPI_OPERATOR_VERSION="0.28.0"
 

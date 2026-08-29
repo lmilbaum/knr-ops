@@ -31,7 +31,8 @@ jobs:
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
           RENOVATE_DRY_RUN: ${{ inputs.dry_run && 'full' || 'false' }}
-          RENOVATE_REPO: ${{ github.repository }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_ONBOARDING: "false"
           LOG_LEVEL: debug
 
       - name: Renovate scheduled run
@@ -41,6 +42,6 @@ jobs:
           configurationFile: renovate.json5
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
-          RENOVATE_REPO: ${{ github.repository }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_ONBOARDING: "false"
           LOG_LEVEL: info

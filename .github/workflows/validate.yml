@@ -13,9 +13,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Dependency drift
-        run: python3 deps/scripts/check.py --forbid
-
       - name: Install kustomize
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -76,6 +73,11 @@ jobs:
         env:
           RENOVATE_GITHUB_COM_TOKEN: ${{ github.token }}
         run: python3 airgap/tests/test-renovate-digest-pinning.py
+
+      - name: Verify Renovate pin coverage for catalog-replaced surfaces
+        env:
+          RENOVATE_GITHUB_COM_TOKEN: ${{ github.token }}
+        run: python3 tests/test-renovate-coverage.py
 
   yaml-lint:
     name: Lint YAML
