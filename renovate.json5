@@ -9,6 +9,8 @@
   //   - clusterctl operator provider manifests under mgmt/*/capi-providers/
   //   - kind node images (cluster classes, airgap scripts, image inventory)
   //   - airgap image inventory and zarf.yaml image lists
+  //   - annotated version constants in bootstrap-rs sources
+  //   - imperative Helm chart pins in pivot.sh
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
@@ -146,6 +148,16 @@
     },
     {
       "customType": "regex",
+      "description": "mise: min_version self-pin",
+      "managerFilePatterns": ["/(^|/)mise\\.toml$/"],
+      "matchStrings": ["min_version = \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "min_version = \"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
       "description": "mise: aws-cli pin (floating latest tag)",
       "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
       "matchStrings": ["aws-cli = \"(?<currentValue>[^\"]+)\""],
@@ -163,6 +175,52 @@
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.+)",
       "autoReplaceStringTemplate": "clusterawsadm = { version = \"{{newValue}}\""
+    },
+    // ── bootstrap-rs chart pins (annotation-driven) ───────────────────────
+    // Datasource and depName live in `// renovate:` comments next to the
+    // constants in the Rust source (see main.rs); this one manager covers
+    // every annotated pin without per-dependency configuration.
+    {
+      "customType": "regex",
+      "description": "Annotated version constants in bootstrap-rs sources",
+      "managerFilePatterns": ["/(^|/)bootstrap-rs/src/[^/]+\\.rs$/"],
+      "matchStrings": [
+        "// renovate: datasource=(?<datasource>[a-z0-9-]+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>[a-z0-9-]+))?\\nconst (?<constName>[A-Z0-9_]+): &str = \"(?<currentValue>[^\"]+)\""
+      ],
+      "autoReplaceStringTemplate": "// renovate: datasource={{{datasource}}} depName={{{depName}}}{{#if versioning}} versioning={{{versioning}}}{{/if}}\nconst {{{constName}}}: &str = \"{{{newValue}}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "pivot.sh imperative Helm chart pins",
+      "managerFilePatterns": ["/(^|/)pivot\\.sh$/"],
+      "matchStrings": [
+        "CERT_MANAGER_VERSION=\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "cert-manager",
+      "registryUrlTemplate": "https://charts.jetstack.io",
+      "datasourceTemplate": "helm",
+      "autoReplaceStringTemplate": "CERT_MANAGER_VERSION=\"{{newValue}}\""
+    },
+    {
+      "customType": "regex",
+      "description": "pivot.sh imperative Helm chart pins",
+      "managerFilePatterns": ["/(^|/)pivot\\.sh$/"],
+      "matchStrings": [
+        "CAPI_OPERATOR_VERSION=\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "cluster-api-operator",
+      "registryUrlTemplate": "https://kubernetes-sigs.github.io/cluster-api-operator",
+      "datasourceTemplate": "helm",
+      "autoReplaceStringTemplate": "CAPI_OPERATOR_VERSION=\"{{newValue}}\""
+    },
+    // ── CI Renovate CLI pin ──────────────────────────────────────────────
+    {
+      "customType": "regex",
+      "description": "Renovate CLI version used by CI digest-pinning and chart-pin tests",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/validate\\.yml$/"],
+      "matchStrings": ["renovate@(?<currentValue>[0-9][^\\s]*)"],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
     },
     // ── clusterctl operator provider manifests ───────────────────────────
     {
@@ -274,6 +332,12 @@
         "kubernetes-sigs/cluster-api-addon-provider-helm"
       ],
       "groupName": "cluster-api"
+    },
+    {
+      "description": "Group imperative pivot chart pins with their GitOps HelmReleases",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["cert-manager", "cluster-api-operator"],
+      "groupName": "platform-charts"
     },
     {
       "description": "Kubernetes node/cluster versions stay independent of each other",

@@ -22,9 +22,11 @@ const GIT_BRANCH: &str = "main";
 const REGISTRY_NAME: &str = "knr-registry";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-// Chart versions installed imperatively before Flux exists. Keep in sync
-// with deps/versions.toml (flux_operator_chart); the two charts version
-// together upstream, so one constant serves both installs.
+// Chart versions installed imperatively before Flux exists. The two charts
+// version together upstream, so one constant serves both installs; Renovate
+// manages the pin via the annotation on the next line (docker datasource
+// against the chart's OCI path, grouped with the other flux pins).
+// renovate: datasource=docker depName=ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 const FLUX_CHART_VERSION: &str = "0.58.0";
 
 /// curl's documented transient statuses: the set `--retry` retries.
