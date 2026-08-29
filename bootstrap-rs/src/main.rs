@@ -27,6 +27,9 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 // together upstream, so one constant serves both installs.
 const FLUX_CHART_VERSION: &str = "0.58.0";
 
+/// curl's documented transient statuses: the set `--retry` retries.
+const CURL_TRANSIENT_STATUSES: [u16; 6] = [408, 429, 500, 502, 503, 504];
+
 // Defaults mirroring bootstrap.sh's `${VAR:-default}` values, plus the node
 // Ready wait the script hardcodes (kubectl wait --timeout=120s).
 const DEFAULT_REGISTRY_PORT: u16 = 5001;
@@ -715,32 +718,25 @@ async fn bootstrap_local_registry(
 
     println!(">>> Waiting for local registry API at localhost:{port}...");
     // Parity with the script's `curl --fail --retry N --retry-connrefused
-    // --retry-delay 1`: 1 initial attempt plus N retries 1s apart; any
-    // HTTP response under 400 succeeds, 5xx and connection errors are
-    // retried, and a definitive 4xx answer fails immediately without
-    // burning the retry budget (curl does not retry 4xx).
+    // --retry-delay 1`: one initial attempt plus N retries 1s apart; any
+    // response below 400 succeeds (curl --fail's threshold); connection
+    // errors (--retry-connrefused) and curl's documented transient
+    // statuses (408, 429, 500, 502, 503, 504) are retried; any other
+    // answer fails immediately instead of burning the retry budget.
     let registry_url = format!("http://localhost:{port}/v2/");
     let mut ready = false;
     for attempt in 0..=cfg.registry_ready_retries {
-        match http.get(&registry_url).send().await {
-            Ok(resp) if resp.status().is_success() => {
+        if let Ok(resp) = http.get(&registry_url).send().await {
+            let status = resp.status().as_u16();
+            if status < 400 {
                 ready = true;
                 break;
             }
-            // 4xx (except 408, which curl retries): the endpoint answered
-            // and refused; retrying cannot change the outcome.
-            Ok(resp)
-                if resp.status().is_client_error()
-                    && resp.status().as_u16() != 408
-                    && attempt < cfg.registry_ready_retries =>
-            {
-                bail!(
-                    "local registry at localhost:{port} returned {}; not retrying",
-                    resp.status().as_u16()
-                );
+            if !CURL_TRANSIENT_STATUSES.contains(&status) {
+                bail!("local registry at localhost:{port} returned {status}; not retrying");
             }
-            _ => {}
         }
+        // Connection errors fall through and are retried (--retry-connrefused).
         if attempt < cfg.registry_ready_retries {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
