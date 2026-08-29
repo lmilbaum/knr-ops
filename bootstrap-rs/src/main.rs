@@ -1,10 +1,12 @@
 //! knr-bootstrap – One-time imperative bootstrap for the management cluster.
 //! Everything after this program runs is driven by GitOps (Flux).
 //!
-//! Rust port of `bootstrap.sh`. Unlike the script, reruns are safe by
-//! default: an existing healthy 'mgmt' cluster is reused and every step is
-//! idempotent, so a partially failed bootstrap can be resumed by rerunning.
-//! Pass --recreate to delete and rebuild the cluster instead.
+//! Rust port of `bootstrap.sh`. The CLI surface is the script's surface:
+//! a positional profile, `--recreate`, and the environment. Unlike the
+//! script, reruns are safe by default: an existing healthy 'mgmt' cluster
+//! is reused and every step is idempotent, so a partially failed bootstrap
+//! can be resumed by rerunning. Pass --recreate to delete and rebuild the
+//! cluster instead.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -24,6 +26,17 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 // with deps/versions.toml (flux_operator_chart); the two charts version
 // together upstream, so one constant serves both installs.
 const FLUX_CHART_VERSION: &str = "0.58.0";
+
+// Defaults mirroring bootstrap.sh's `${VAR:-default}` values, plus the node
+// Ready wait the script hardcodes (kubectl wait --timeout=120s).
+const DEFAULT_REGISTRY_PORT: u16 = 5001;
+const DEFAULT_REGISTRY_READY_RETRIES: u32 = 120;
+const DEFAULT_LOCAL_RECONCILE_TIMEOUT: &str = "15m";
+const DEFAULT_GITHUB_USER: &str = "git";
+const DEFAULT_AGE_KEY_FILE: &str = "age.agekey";
+const DEFAULT_OCI_REPOSITORY: &str = "knr-ops";
+const DEFAULT_OCI_TAG: &str = "latest";
+const NODE_READY_TIMEOUT: &str = "120s";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -74,8 +87,11 @@ impl std::fmt::Display for Profile {
 
 /// One-time imperative bootstrap for the knr-ops management cluster.
 ///
-/// Reruns are safe: an existing healthy 'mgmt' cluster is reused and all
-/// steps are idempotent, so a partial failure can be resumed by rerunning.
+/// Behavioral port of bootstrap.sh: the CLI surface is the script's
+/// surface — a positional profile, `--recreate`, and the environment.
+/// Every `${VAR:-default}` knob the script reads is read the same way
+/// (see `Config`); the expanded flag interface is deferred for separate
+/// review in a follow-up.
 #[derive(Parser, Debug)]
 #[command(name = "knr-bootstrap", version, about)]
 struct Cli {
@@ -89,68 +105,70 @@ struct Cli {
     /// since the cluster was created (the reuse path does not detect drift).
     #[arg(long)]
     recreate: bool,
+}
 
-    /// Host port for the local container registry (local-host profile)
-    #[arg(long, env = "REGISTRY_PORT", default_value_t = 5001)]
+/// Resolved run configuration: the environment knobs bootstrap.sh reads
+/// with `${VAR:-default}` semantics — unset and empty both fall back to
+/// the default, exactly as in the script. Not clap args: this PR ports
+/// the script's behavior, and the script's interface is env-only.
+#[derive(Debug)]
+struct Config {
+    profile: Profile,
+    recreate: bool,
     registry_port: u16,
-
-    /// Retries (1s apart) while waiting for the local registry API
-    #[arg(long, env = "REGISTRY_READY_RETRIES", default_value_t = 120)]
     registry_ready_retries: u32,
-
-    /// kubectl-style timeout for the management node Ready wait (e.g. 120s)
-    #[arg(long, env = "NODE_READY_TIMEOUT", default_value = "120s")]
-    node_ready_timeout: String,
-
-    /// kubectl-style timeout for local reconciliation waits (e.g. 15m)
-    #[arg(long, env = "LOCAL_RECONCILE_TIMEOUT", default_value = "15m")]
     local_reconcile_timeout: String,
-
-    /// Container engine to use (docker or podman); auto-detected when omitted
-    #[arg(long, env = "CONTAINER_ENGINE")]
     container_engine: Option<String>,
-
-    /// HTTPS GitHub repository URL (required for the aws profile)
-    #[arg(long, env = "GIT_REPO_URL")]
     git_repo_url: Option<String>,
-
-    /// GitHub PAT with read access to the repo (required for the aws profile)
-    #[arg(long, env = "GITHUB_TOKEN", hide_env_values = true)]
     github_token: Option<String>,
-
-    /// Username for the Flux GitHub secret used to clone the repo
-    #[arg(long, env = "GITHUB_USER", default_value = "git")]
     github_user: String,
-
-    /// Path to the SOPS age key file (aws profile)
-    #[arg(long, env = "AGE_KEY_FILE", default_value = "age.agekey")]
     age_key_file: PathBuf,
-
-    /// Override the age public key instead of parsing it from the key file
-    #[arg(long, env = "AGE_PUBLIC_KEY")]
     age_public_key: Option<String>,
-
-    /// OCI repository name for the local-host artifact. Caveat: the
-    /// workload FluxInstance still pins knr-ops:latest in Git, so a
-    /// non-default value only serves the management instance until #92
-    /// templates it.
-    #[arg(long, env = "OCI_REPOSITORY", default_value = "knr-ops")]
     oci_repository: String,
-
-    /// OCI tag for the local-host artifact. Same caveat as
-    /// --oci-repository: the workload FluxInstance pins latest in Git.
-    #[arg(long, env = "OCI_TAG", default_value = "latest")]
     oci_tag: String,
 }
 
-impl Cli {
-    /// The active profile, resolved the way bootstrap.sh resolves it:
-    /// non-empty KNR_OPS_PROFILE over the positional argument, aws last.
-    fn profile(&self) -> Result<Profile> {
-        resolve_profile(
-            std::env::var("KNR_OPS_PROFILE").ok().as_deref(),
-            self.profile,
+impl Config {
+    /// Resolve the run configuration from the process environment.
+    fn load(cli: &Cli) -> Result<Self> {
+        Self::from_env(cli, |name| std::env::var(name).ok())
+    }
+
+    /// Build a Config from a lookup over the script's env knobs
+    /// (injectable so the resolution logic is unit-testable). An empty
+    /// value behaves like unset, matching `${VAR:-default}`.
+    fn from_env(cli: &Cli, get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let value = |name: &str| get(name).filter(|v| !v.is_empty());
+        let with_default =
+            |name: &str, default: &str| value(name).unwrap_or_else(|| default.to_string());
+        let profile = resolve_profile(value("KNR_OPS_PROFILE").as_deref(), cli.profile)?;
+        let registry_port = with_default("REGISTRY_PORT", &DEFAULT_REGISTRY_PORT.to_string())
+            .parse::<u16>()
+            .context("REGISTRY_PORT must be a port number (1-65535)")?;
+        let registry_ready_retries = with_default(
+            "REGISTRY_READY_RETRIES",
+            &DEFAULT_REGISTRY_READY_RETRIES.to_string(),
         )
+        .parse::<u32>()
+        .context("REGISTRY_READY_RETRIES must be a non-negative integer")?;
+        Ok(Config {
+            profile,
+            recreate: cli.recreate,
+            registry_port,
+            registry_ready_retries,
+            local_reconcile_timeout: with_default(
+                "LOCAL_RECONCILE_TIMEOUT",
+                DEFAULT_LOCAL_RECONCILE_TIMEOUT,
+            ),
+            container_engine: value("CONTAINER_ENGINE"),
+            git_repo_url: value("GIT_REPO_URL"),
+            github_token: value("GITHUB_TOKEN"),
+            github_user: with_default("GITHUB_USER", DEFAULT_GITHUB_USER),
+            age_key_file: PathBuf::from(with_default("AGE_KEY_FILE", DEFAULT_AGE_KEY_FILE)),
+            age_public_key: value("AGE_PUBLIC_KEY"),
+            oci_repository: with_default("OCI_REPOSITORY", DEFAULT_OCI_REPOSITORY),
+            oci_tag: with_default("OCI_TAG", DEFAULT_OCI_TAG),
+        })
     }
 }
 
@@ -361,8 +379,8 @@ struct Preflight {
     aws: Option<AwsContext>,
 }
 
-async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight> {
-    let profile = cli.profile()?;
+async fn preflight_checks(cfg: &Config, http: &reqwest::Client) -> Result<Preflight> {
+    let profile = cfg.profile;
     // Report every missing tool at once instead of failing on the first.
     let missing: Vec<&str> = required_tools(profile)
         .into_iter()
@@ -373,7 +391,7 @@ async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight
     }
 
     let aws = if profile == Profile::Aws {
-        Some(preflight_aws(cli, http).await?)
+        Some(preflight_aws(cfg, http).await?)
     } else {
         None
     };
@@ -381,7 +399,7 @@ async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight
     // Detect and select a running container engine. Note: when using podman via
     // the docker CLI shim (e.g., on macOS), `docker --version` reports podman;
     // we check for that case first.
-    let engine = match cli.container_engine.clone() {
+    let engine = match cfg.container_engine.clone() {
         Some(e) => e,
         None => {
             if command_exists("docker") && run_quiet("docker", &["info"]).await {
@@ -437,18 +455,18 @@ async fn preflight_checks(cli: &Cli, http: &reqwest::Client) -> Result<Preflight
     })
 }
 
-async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> {
-    let github_token = cli
+async fn preflight_aws(cfg: &Config, http: &reqwest::Client) -> Result<AwsContext> {
+    let github_token = cfg
         .github_token
         .clone()
         .context("GITHUB_TOKEN must be set (a PAT with read access to the repo)")?;
-    let git_repo_url = cli
+    let git_repo_url = cfg
         .git_repo_url
         .clone()
         .context("GIT_REPO_URL must be set")?;
 
     // GITHUB_USER is used in the Flux GitHub secret for repo clone authentication.
-    let github_user = cli.github_user.clone();
+    let github_user = cfg.github_user.clone();
 
     let github_repo = parse_github_repo(&git_repo_url)
         .context("GIT_REPO_URL must be an HTTPS GitHub repository URL")?;
@@ -469,7 +487,7 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
         );
     }
 
-    let age_key_file = &cli.age_key_file;
+    let age_key_file = cfg.age_key_file.clone();
     if !age_key_file.is_file() {
         bail!(
             "age key file not found at '{}'.\n       Generate one with:  mise run sops-keygen\n       and add its PUBLIC key to .sops.yaml. See docs/secrets.md.",
@@ -479,7 +497,7 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
 
     // Validate age key file format first (before attempting to extract the
     // public key). This avoids silently proceeding with a malformed file.
-    let age_key_content = std::fs::read_to_string(age_key_file)
+    let age_key_content = std::fs::read_to_string(&age_key_file)
         .with_context(|| format!("failed to read '{}'", age_key_file.display()))?;
     let missing_fields = validate_age_key(&age_key_content);
     if !missing_fields.is_empty() {
@@ -491,7 +509,7 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
     }
 
     // Now safely extract the public key (validation already passed).
-    let age_pubkey = cli
+    let age_pubkey = cfg
         .age_public_key
         .clone()
         .filter(|k| !k.is_empty())
@@ -520,12 +538,12 @@ async fn preflight_aws(cli: &Cli, http: &reqwest::Client) -> Result<AwsContext> 
 /// reachable and all nodes go Ready; this makes reruns non-destructive and
 /// lets a partially failed bootstrap resume. With --recreate (or when no
 /// cluster exists) the cluster is (re)built from the rendered config.
-async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
+async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
     let clusters = capture_lossy("kind", &["get", "clusters"]).await;
     let exists = clusters.lines().any(|l| l.trim() == "mgmt");
-    let node_ready_timeout = format!("--timeout={}", cli.node_ready_timeout);
+    let node_ready_timeout = format!("--timeout={NODE_READY_TIMEOUT}");
 
-    if exists && !cli.recreate {
+    if exists && !cfg.recreate {
         println!(">>> Reusing existing kind cluster 'mgmt' (pass --recreate to replace it)...");
         println!(">>> Validating existing cluster health...");
         if !run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await {
@@ -556,8 +574,7 @@ async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
             return Ok(());
         }
         bail!(
-            "existing kind cluster 'mgmt' is not healthy (context unreachable or nodes not Ready within {}); rerun with --recreate to replace it",
-            cli.node_ready_timeout
+            "existing kind cluster 'mgmt' is not healthy (context unreachable or nodes not Ready within {NODE_READY_TIMEOUT}); rerun with --recreate to replace it"
         );
     }
 
@@ -570,7 +587,7 @@ async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     // Mount the host's container engine socket into the kind node at the
     // standard Docker socket path so in-cluster components can reach a
     // Docker-compatible API whether the backend is Docker or Podman.
-    let kind_config = render_kind_config(cli.profile()?, cli.registry_port, engine_sock);
+    let kind_config = render_kind_config(cfg.profile, cfg.registry_port, engine_sock);
     run_with_stdin(
         "kind",
         &["create", "cluster", "--name", "mgmt", "--config", "-"],
@@ -595,9 +612,13 @@ async fn ensure_kind_cluster(cli: &Cli, engine_sock: &str) -> Result<()> {
     Ok(())
 }
 
-async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Client) -> Result<()> {
+async fn bootstrap_local_registry(
+    cfg: &Config,
+    engine: &str,
+    http: &reqwest::Client,
+) -> Result<()> {
     println!(">>> Bootstrapping local container registry...");
-    let port = cli.registry_port;
+    let port = cfg.registry_port;
     let name_filter = format!("name=^{REGISTRY_NAME}$");
 
     let exists = capture_lossy(
@@ -693,17 +714,34 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
     }
 
     println!(">>> Waiting for local registry API at localhost:{port}...");
+    // Parity with the script's `curl --fail --retry N --retry-connrefused
+    // --retry-delay 1`: 1 initial attempt plus N retries 1s apart; any
+    // HTTP response under 400 succeeds, 5xx and connection errors are
+    // retried, and a definitive 4xx answer fails immediately without
+    // burning the retry budget (curl does not retry 4xx).
     let registry_url = format!("http://localhost:{port}/v2/");
     let mut ready = false;
-    for attempt in 0..=cli.registry_ready_retries {
+    for attempt in 0..=cfg.registry_ready_retries {
         match http.get(&registry_url).send().await {
             Ok(resp) if resp.status().is_success() => {
                 ready = true;
                 break;
             }
+            // 4xx (except 408, which curl retries): the endpoint answered
+            // and refused; retrying cannot change the outcome.
+            Ok(resp)
+                if resp.status().is_client_error()
+                    && resp.status().as_u16() != 408
+                    && attempt < cfg.registry_ready_retries =>
+            {
+                bail!(
+                    "local registry at localhost:{port} returned {}; not retrying",
+                    resp.status().as_u16()
+                );
+            }
             _ => {}
         }
-        if attempt < cli.registry_ready_retries {
+        if attempt < cfg.registry_ready_retries {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
@@ -725,12 +763,12 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
 
     println!(">>> Publishing initial OCI artifact from the local Git checkout...");
     // Forward the resolved values: the mise oci-push task reads them from
-    // its own environment, so CLI flags must not stop at this boundary.
+    // its own environment, so they must not stop at this boundary.
     let status = Command::new("mise")
         .args(["-E", "local-host", "run", "oci-push"])
-        .env("REGISTRY_PORT", cli.registry_port.to_string())
-        .env("OCI_REPOSITORY", &cli.oci_repository)
-        .env("OCI_TAG", &cli.oci_tag)
+        .env("REGISTRY_PORT", cfg.registry_port.to_string())
+        .env("OCI_REPOSITORY", &cfg.oci_repository)
+        .env("OCI_TAG", &cfg.oci_tag)
         .status()
         .await
         .with_context(|| "failed to spawn 'mise'")?;
@@ -739,8 +777,8 @@ async fn bootstrap_local_registry(cli: &Cli, engine: &str, http: &reqwest::Clien
     }
     println!(
         ">>> Initial OCI artifact is available at oci://localhost:{port}/{repo}:{tag}",
-        repo = cli.oci_repository,
-        tag = cli.oci_tag
+        repo = cfg.oci_repository,
+        tag = cfg.oci_tag
     );
     Ok(())
 }
@@ -823,13 +861,13 @@ async fn create_aws_secrets(aws: &AwsContext) -> Result<()> {
 }
 
 async fn install_flux_instance(
-    cli: &Cli,
+    cfg: &Config,
     aws: Option<&AwsContext>,
     registry_config: &Path,
 ) -> Result<bool> {
     println!(">>> Installing FluxInstance via Helm...");
     let mut controllers_ready = true;
-    let cfg = registry_config.to_string_lossy().into_owned();
+    let registry_cfg = registry_config.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec![
         "upgrade".into(),
         "--install".into(),
@@ -857,7 +895,7 @@ async fn install_flux_instance(
         "--set".into(),
         "instance.cluster.domain=cluster.local".into(),
         "--registry-config".into(),
-        cfg,
+        registry_cfg,
     ];
 
     match aws {
@@ -882,10 +920,10 @@ async fn install_flux_instance(
                 "--set".into(),
                 format!(
                     "instance.sync.url=oci://{REGISTRY_NAME}:5000/{}",
-                    cli.oci_repository
+                    cfg.oci_repository
                 ),
                 "--set".into(),
-                format!("instance.sync.ref={}", cli.oci_tag),
+                format!("instance.sync.ref={}", cfg.oci_tag),
                 "--set".into(),
                 "instance.sync.path=mgmt/local-host".into(),
                 "--set-json".into(),
@@ -950,7 +988,7 @@ async fn wait_for_resource(args: &[&str], attempts: u32) -> bool {
     false
 }
 
-async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
+async fn watch_local_reconciliation(cfg: &Config, engine: &str) -> Result<()> {
     println!();
     println!(">>> Step 5: Flux reconciliation progress");
 
@@ -974,7 +1012,7 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     }
 
     println!(">>> Waiting until the local workload cluster and Flux addons are ready...");
-    let timeout_arg = format!("--timeout={}", cli.local_reconcile_timeout);
+    let timeout_arg = format!("--timeout={}", cfg.local_reconcile_timeout);
     if run(
         "kubectl",
         &[
@@ -991,7 +1029,7 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     {
         eprintln!(
             "ERROR: local-host reconciliation did not complete within {}",
-            cli.local_reconcile_timeout
+            cfg.local_reconcile_timeout
         );
         let _ = run("flux", &["get", "kustomizations"]).await;
         bail!("local-host reconciliation timed out");
@@ -1106,7 +1144,7 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
     {
         eprintln!(
             "ERROR: workload reconciliation did not complete within {}",
-            cli.local_reconcile_timeout
+            cfg.local_reconcile_timeout
         );
         let _ = run(
             "flux",
@@ -1128,51 +1166,10 @@ async fn watch_local_reconciliation(cli: &Cli, engine: &str) -> Result<()> {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-/// Resolve on the first SIGINT or SIGTERM (the signals the script's EXIT
-/// trap covered via bash's default signal-to-exit behavior).
-async fn shutdown_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-    tokio::select! {
-        _ = sigint.recv() => {}
-        _ = sigterm.recv() => {}
-    }
-}
-
-/// Env knobs the script reads as `${VAR:-default}`; clap would treat an
-/// empty-string value as a real value (and fail parsing typed ones), so
-/// empty entries are cleared before parsing to keep `VAR=` lines in .env
-/// files working like the script.
-const ENV_KNOBS: &[&str] = &[
-    "KNR_OPS_PROFILE",
-    "REGISTRY_PORT",
-    "REGISTRY_READY_RETRIES",
-    "NODE_READY_TIMEOUT",
-    "LOCAL_RECONCILE_TIMEOUT",
-    "CONTAINER_ENGINE",
-    "GIT_REPO_URL",
-    "GITHUB_TOKEN",
-    "GITHUB_USER",
-    "AGE_KEY_FILE",
-    "AGE_PUBLIC_KEY",
-    "OCI_REPOSITORY",
-    "OCI_TAG",
-];
-
-fn clear_empty_env_knobs() {
-    for var in ENV_KNOBS {
-        if std::env::var(var).is_ok_and(|v| v.is_empty()) {
-            std::env::remove_var(var);
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    clear_empty_env_knobs();
     let cli = Cli::parse();
-    let profile = cli.profile()?;
+    let cfg = Config::load(&cli)?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("knr-bootstrap/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -1180,32 +1177,27 @@ async fn main() -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    // Ctrl-C and SIGTERM cancel the bootstrap future instead of killing the
-    // process: dropping it runs the Drop-based cleanup (temp kubeconfigs,
-    // the flux logs follower) that the script wired to its EXIT trap.
-    tokio::select! {
-        res = run_bootstrap(&cli, profile, &http) => res,
-        _ = shutdown_signal() => {
-            eprintln!();
-            eprintln!(">>> Interrupted; cleaned up temp files and stopped followers");
-            bail!("interrupted by signal");
-        }
-    }
+    // Parity with the script: cleanup runs on the normal exit and error
+    // paths (temp files drop with their owners, the flux logs follower is
+    // killed by its guard). Complete signal-driven cancellation is deferred
+    // to a focused follow-up rather than shipped half-implemented here.
+    run_bootstrap(&cfg, &http).await
 }
 
-async fn run_bootstrap(cli: &Cli, profile: Profile, http: &reqwest::Client) -> Result<()> {
-    let preflight = preflight_checks(cli, http).await?;
+async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
+    let profile = cfg.profile;
+    let preflight = preflight_checks(cfg, http).await?;
     println!(
         ">>> Using container engine: {} (socket: {})",
         preflight.engine, preflight.engine_sock
     );
 
     // Step 1: ensure the kind management cluster (reuse by default; --recreate replaces).
-    ensure_kind_cluster(cli, &preflight.engine_sock).await?;
+    ensure_kind_cluster(cfg, &preflight.engine_sock).await?;
 
     // Step 1.5: bootstrap the local container registry (local-host only).
     if profile == Profile::LocalHost {
-        bootstrap_local_registry(cli, &preflight.engine, http).await?;
+        bootstrap_local_registry(cfg, &preflight.engine, http).await?;
     }
 
     // Anonymous registry config shared by both helm installs; the temp file is
@@ -1228,11 +1220,11 @@ async fn run_bootstrap(cli: &Cli, profile: Profile, http: &reqwest::Client) -> R
 
     // Step 4: install the FluxInstance via Helm.
     let controllers_ready =
-        install_flux_instance(cli, preflight.aws.as_ref(), registry_config.path()).await?;
+        install_flux_instance(cfg, preflight.aws.as_ref(), registry_config.path()).await?;
 
     // Step 5: watch local-host reconciliation.
     if profile == Profile::LocalHost {
-        watch_local_reconciliation(cli, &preflight.engine).await?;
+        watch_local_reconciliation(cfg, &preflight.engine).await?;
     }
 
     // Done. Everything else is driven by GitOps.
@@ -1259,12 +1251,12 @@ async fn run_bootstrap(cli: &Cli, profile: Profile, http: &reqwest::Client) -> R
             );
             println!(
                 ">>> Local registry: localhost:{port} (cluster endpoint: {REGISTRY_NAME}:5000)",
-                port = cli.registry_port
+                port = cfg.registry_port
             );
             println!(
                 ">>> OCI source: oci://{REGISTRY_NAME}:5000/{repo}:{tag} (path: mgmt/local-host)",
-                repo = cli.oci_repository,
-                tag = cli.oci_tag
+                repo = cfg.oci_repository,
+                tag = cfg.oci_tag
             );
             println!(">>> Watch progress with: flux get sources oci --watch");
             println!(">>> No AWS resources were provisioned");
@@ -1293,43 +1285,73 @@ mod tests {
     }
 
     #[test]
-    fn cli_defaults_match_script() {
-        let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
-        assert_eq!(cli.profile, Some(Profile::LocalHost));
-        assert!(!cli.recreate);
-        assert_eq!(cli.registry_port, 5001);
-        assert_eq!(cli.registry_ready_retries, 120);
-        assert_eq!(cli.node_ready_timeout, "120s");
-        assert_eq!(cli.local_reconcile_timeout, "15m");
-        assert_eq!(cli.github_user, "git");
-        assert_eq!(cli.age_key_file, PathBuf::from("age.agekey"));
-        assert_eq!(cli.oci_repository, "knr-ops");
-        assert_eq!(cli.oci_tag, "latest");
+    fn cli_rejects_deferred_flags() {
+        // The expanded flag interface is deferred (review follow-up): the
+        // CLI accepts only the positional profile and --recreate.
+        for rejected in [
+            ["knr-bootstrap", "--registry-port", "5500"],
+            ["knr-bootstrap", "--github-token", "x"],
+            ["knr-bootstrap", "--oci-tag", "dev"],
+            ["knr-bootstrap", "--container-engine", "docker"],
+        ] {
+            assert!(
+                Cli::try_parse_from(rejected).is_err(),
+                "{rejected:?} should not parse"
+            );
+        }
     }
 
     #[test]
-    fn env_knobs_cover_every_clap_env_binding() {
-        // Every #[arg(env = ...)] binding must appear in ENV_KNOBS so the
-        // empty-string normalization cannot silently miss a new knob.
-        // KNR_OPS_PROFILE is resolved manually (script precedence) and so
-        // has no clap binding; it is still normalized via ENV_KNOBS.
-        let bound: Vec<String> = Cli::command()
-            .get_arguments()
-            .filter_map(|a| a.get_env().map(|e| e.to_string_lossy().into_owned()))
-            .collect();
-        for knob in ENV_KNOBS {
-            assert!(
-                bound.iter().any(|b| b == knob) || *knob == "KNR_OPS_PROFILE",
-                "{knob} missing from clap env bindings"
-            );
-        }
-        for b in &bound {
-            assert!(
-                ENV_KNOBS.contains(&b.as_str()),
-                "{} missing from ENV_KNOBS",
-                b
-            );
-        }
+    fn config_defaults_match_script() {
+        let cfg = Config::from_env(
+            &Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap(),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(cfg.profile, Profile::LocalHost);
+        assert!(!cfg.recreate);
+        assert_eq!(cfg.registry_port, 5001);
+        assert_eq!(cfg.registry_ready_retries, 120);
+        assert_eq!(cfg.local_reconcile_timeout, "15m");
+        assert_eq!(cfg.github_user, "git");
+        assert_eq!(cfg.age_key_file, PathBuf::from("age.agekey"));
+        assert_eq!(cfg.oci_repository, "knr-ops");
+        assert_eq!(cfg.oci_tag, "latest");
+        assert!(cfg.container_engine.is_none());
+        assert!(cfg.git_repo_url.is_none());
+        assert!(cfg.github_token.is_none());
+        assert!(cfg.age_public_key.is_none());
+    }
+
+    #[test]
+    fn config_reads_env_knobs_with_script_semantics() {
+        let cli = Cli::try_parse_from(["knr-bootstrap"]).unwrap();
+        let get = |name: &str| -> Option<String> {
+            match name {
+                "REGISTRY_PORT" => Some("5500".into()),
+                "LOCAL_RECONCILE_TIMEOUT" => Some("30m".into()),
+                "GITHUB_USER" => Some("".into()), // empty behaves like unset
+                "OCI_TAG" => Some("dev".into()),
+                _ => None,
+            }
+        };
+        let cfg = Config::from_env(&cli, get).unwrap();
+        assert_eq!(cfg.profile, Profile::Aws); // no env, no positional
+        assert_eq!(cfg.registry_port, 5500);
+        assert_eq!(cfg.local_reconcile_timeout, "30m");
+        assert_eq!(cfg.github_user, "git"); // empty env fell back to default
+        assert_eq!(cfg.oci_tag, "dev");
+    }
+
+    #[test]
+    fn config_rejects_non_numeric_registry_port() {
+        let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
+        let err = Config::from_env(&cli, |name| match name {
+            "REGISTRY_PORT" => Some("not-a-port".into()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("REGISTRY_PORT"));
     }
 
     #[test]
