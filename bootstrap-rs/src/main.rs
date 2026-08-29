@@ -786,8 +786,8 @@ async fn install_flux_operator(registry_config: &Path) -> Result<()> {
     let cfg = registry_config.to_string_lossy();
     // upgrade --install (script used install): rerun-safe after a partial failure.
     // --version pins the chart so reruns cannot resolve a different release
-    // (tracks flux_operator_chart in deps/versions.toml, as the HelmRelease in
-    // Git does).
+    // (managed by the renovate annotation on FLUX_CHART_VERSION, as the
+    // HelmRelease in Git is).
     run(
         "helm",
         &[
