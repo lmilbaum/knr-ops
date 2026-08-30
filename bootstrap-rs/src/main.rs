@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
@@ -195,6 +195,24 @@ impl Config {
         )
         .parse::<u32>()
         .context("REGISTRY_READY_RETRIES must be a non-negative integer")?;
+        // Pivot knobs are validated here, not in pivot Phase 1, so a bad
+        // value fails at startup instead of after the full bootstrap.
+        let mgmt_ready_timeout = value("MGMT_READY_TIMEOUT").unwrap_or_else(|| match profile {
+            Profile::Aws => DEFAULT_MGMT_READY_TIMEOUT_AWS.to_string(),
+            Profile::LocalHost => DEFAULT_MGMT_READY_TIMEOUT_LOCAL.to_string(),
+        });
+        parse_duration_seconds(&mgmt_ready_timeout)
+            .context("MGMT_READY_TIMEOUT must be a duration (40m, 2h, 90s, or bare seconds)")?;
+        let mgmt_poll_interval = with_default(
+            "MGMT_POLL_INTERVAL",
+            &DEFAULT_MGMT_POLL_INTERVAL.to_string(),
+        )
+        .parse::<u64>()
+        .context("MGMT_POLL_INTERVAL must be a positive integer")?;
+        ensure!(
+            mgmt_poll_interval > 0,
+            "MGMT_POLL_INTERVAL must be a positive integer, got 0"
+        );
         Ok(Config {
             profile,
             recreate: cli.recreate,
@@ -220,16 +238,8 @@ impl Config {
             mgmt_kubeconfig: value("MGMT_KUBECONFIG")
                 .map(PathBuf::from)
                 .unwrap_or_else(default_mgmt_kubeconfig),
-            mgmt_ready_timeout: value("MGMT_READY_TIMEOUT").unwrap_or_else(|| match profile {
-                Profile::Aws => DEFAULT_MGMT_READY_TIMEOUT_AWS.to_string(),
-                Profile::LocalHost => DEFAULT_MGMT_READY_TIMEOUT_LOCAL.to_string(),
-            }),
-            mgmt_poll_interval: with_default(
-                "MGMT_POLL_INTERVAL",
-                &DEFAULT_MGMT_POLL_INTERVAL.to_string(),
-            )
-            .parse::<u64>()
-            .context("MGMT_POLL_INTERVAL must be a positive integer")?,
+            mgmt_ready_timeout,
+            mgmt_poll_interval,
             bootstrap_kubecontext: with_default(
                 "BOOTSTRAP_KUBECONTEXT",
                 DEFAULT_BOOTSTRAP_KUBECONTEXT,
@@ -2220,6 +2230,30 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("MGMT_POLL_INTERVAL"));
+    }
+
+    #[test]
+    fn config_rejects_zero_poll_interval() {
+        // 0 parses as u64 but divides by zero in the Phase 1 attempt
+        // arithmetic; reject it at startup like any other invalid value.
+        let cli = Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap();
+        let err = Config::from_env(&cli, |name| match name {
+            "MGMT_POLL_INTERVAL" => Some("0".into()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("MGMT_POLL_INTERVAL"));
+    }
+
+    #[test]
+    fn config_rejects_invalid_ready_timeout() {
+        let cli = Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap();
+        let err = Config::from_env(&cli, |name| match name {
+            "MGMT_READY_TIMEOUT" => Some("abc".into()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("MGMT_READY_TIMEOUT"));
     }
 
     #[test]
