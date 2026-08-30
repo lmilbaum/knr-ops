@@ -4,7 +4,9 @@
 The chart versions knr-bootstrap installs imperatively must equal the
 versions Flux reconciles from Git, or Flux cannot adopt the imperative
 installs without drift. Fails when they disagree, when a declared
-provider-manifest or sync path is missing, or when the file does not parse.
+provider-manifest or sync path is missing, when an environment's kind
+does not match its section name (the section name is authoritative for
+profile resolution), or when the file does not parse.
 Requires Python 3.11+ (tomllib); mise and CI both provide it.
 """
 
@@ -66,6 +68,11 @@ def main() -> int:
                 )
 
     for name, env in config.get("environments", {}).items():
+        kind = env.get("kind")
+        if kind != name:
+            failures.append(
+                f"environments.{name} kind {kind!r} must match its section name"
+            )
         sync = REPO_ROOT / env.get("sync-path", "")
         if not sync.is_dir():
             failures.append(f"environments.{name}.sync-path '{env.get('sync-path')}' is not a directory")

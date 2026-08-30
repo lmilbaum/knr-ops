@@ -8,6 +8,10 @@
 #
 # Environment order matters: error messages list environments in file order
 # to preserve bootstrap.sh's exact wording ('local-host' before 'aws').
+#
+# Profile resolution: the [environments.*] section name is authoritative;
+# KNR_OPS_PROFILE matches it exactly. Each environment's `kind` restates
+# the section name, and the cross-check fails if the two disagree.
 
 [bootstrap]
 default-environment = "aws"
@@ -26,6 +30,8 @@ mgmt-context = "knr-ops-mgmt"
 # with the HelmReleases/HelmChartProxies in mgmt/<env>/ so Flux adopts the
 # installs without drift; `mise run validate` cross-checks them and Renovate
 # updates both sides together.
+# flux-operator and flux-instance version together upstream, so this one
+# pin serves both chart installs (FLUX_CHART_VERSION in main.rs).
 # renovate: datasource=docker depName=ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 flux-operator = "0.58.0"
 # renovate: datasource=helm registryUrl=https://charts.jetstack.io depName=cert-manager
