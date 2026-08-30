@@ -12,37 +12,27 @@
 //! is reused and every step is idempotent, so a partially failed bootstrap
 //! can be resumed by rerunning. Pass --recreate to delete and rebuild the
 //! cluster instead.
+//!
+//! Everything repository-specific (names, paths, chart pins, environments)
+//! comes from `bootstrap.toml` (see `config.rs`, issue #98); the binary is
+//! a generic bootstrap engine and knr-ops is its first consumer.
+
+mod config;
+
+use config::{BootstrapConfig, Environment};
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-const GIT_BRANCH: &str = "main";
-const REGISTRY_NAME: &str = "knr-registry";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-// Chart versions installed imperatively before Flux exists. The two charts
-// version together upstream, so one constant serves both installs; Renovate
-// manages the pin via the annotation on the next line (docker datasource
-// against the chart's OCI path, grouped with the other flux pins).
-// renovate: datasource=docker depName=ghcr.io/controlplaneio-fluxcd/charts/flux-operator
-const FLUX_CHART_VERSION: &str = "0.58.0";
-// Chart versions installed imperatively in the pivot target before Flux
-// exists there. Keep in sync with the HelmReleases in
-// mgmt/<env>/infrastructure/ (cert-manager, capi-operator) so Flux adopts
-// these installs without drift; Renovate updates these pins together with
-// the manifest chart versions (platform-charts group).
-// renovate: datasource=helm registryUrl=https://charts.jetstack.io depName=cert-manager
-const CERT_MANAGER_VERSION: &str = "1.21.1";
-// renovate: datasource=helm registryUrl=https://kubernetes-sigs.github.io/cluster-api-operator depName=cluster-api-operator
-const CAPI_OPERATOR_VERSION: &str = "0.28.0";
-
 /// curl's documented transient statuses: the set `--retry` retries.
 const CURL_TRANSIENT_STATUSES: [u16; 6] = [408, 429, 500, 502, 503, 504];
 
@@ -57,69 +47,32 @@ const DEFAULT_OCI_REPOSITORY: &str = "knr-ops";
 const DEFAULT_OCI_TAG: &str = "latest";
 const NODE_READY_TIMEOUT: &str = "120s";
 
-// Pivot defaults mirroring pivot.sh's `${VAR:-default}` values.
+// Pivot defaults mirroring pivot.sh's `${VAR:-default}` values. The
+// repository-specific defaults (mgmt cluster names, ready timeouts, kind
+// names, contexts, namespaces) come from bootstrap.toml instead.
 const DEFAULT_MGMT_KUBECONFIG_RELATIVE: &str = ".kube/knr-ops-mgmt.yaml";
-const DEFAULT_MGMT_READY_TIMEOUT_AWS: &str = "40m";
-const DEFAULT_MGMT_READY_TIMEOUT_LOCAL: &str = "15m";
 const DEFAULT_MGMT_POLL_INTERVAL: u64 = 10;
-const DEFAULT_BOOTSTRAP_KUBECONTEXT: &str = "kind-mgmt";
-/// Management cluster name per environment (pivot.sh `MGMT_CLUSTER`).
-fn mgmt_cluster_name(profile: Profile) -> &'static str {
-    match profile {
-        Profile::Aws => "eu-north-1-management",
-        Profile::LocalHost => "local-management",
-    }
-}
-/// Namespace the management Cluster resource lives in (pivot.sh `MGMT_NS`).
-const MGMT_NS: &str = "default";
-/// The context the exported management kubeconfig is renamed to.
-const MGMT_CONTEXT: &str = "knr-ops-mgmt";
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Profile {
-    #[value(name = "local-host")]
-    LocalHost,
-    #[value(name = "aws")]
-    Aws,
-}
-
-impl Profile {
-    /// Parse a profile name exactly as the script's `case` accepts it.
-    fn parse_value(value: &str) -> Result<Profile> {
-        Profile::value_variants()
-            .iter()
-            .copied()
-            .find(|p| {
-                p.to_possible_value()
-                    .is_some_and(|pv| pv.matches(value, false))
-            })
-            .with_context(|| {
-                format!("unsupported profile '{value}' (expected 'local-host' or 'aws')")
-            })
-    }
-}
-
-/// Resolve the active profile the way bootstrap.sh does
+/// Resolve the active environment name the way bootstrap.sh does
 /// (`PROFILE="${KNR_OPS_PROFILE:-${1:-aws}}"`): a non-empty
-/// KNR_OPS_PROFILE wins over the positional argument, then aws. clap
-/// resolves positional-over-env (the opposite), so the env var is read
-/// manually instead of via #[arg(env)].
-fn resolve_profile(env: Option<&str>, positional: Option<Profile>) -> Result<Profile> {
-    if let Some(value) = env.filter(|v| !v.is_empty()) {
-        return Profile::parse_value(value);
-    }
-    Ok(positional.unwrap_or(Profile::Aws))
-}
-
-impl std::fmt::Display for Profile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Profile::LocalHost => write!(f, "local-host"),
-            Profile::Aws => write!(f, "aws"),
-        }
-    }
+/// KNR_OPS_PROFILE wins over the positional argument, then the config's
+/// bootstrap.default-environment. clap resolves positional-over-env (the
+/// opposite), so the env var is read manually instead of #[arg(env)].
+/// The name must be an [environments.*] section of bootstrap.toml; the
+/// section name is authoritative (issue #98).
+fn resolve_environment(
+    env: Option<&str>,
+    positional: Option<&str>,
+    config: &BootstrapConfig,
+) -> Result<String> {
+    let name = if let Some(value) = env.filter(|v| !v.is_empty()) {
+        value
+    } else {
+        positional.unwrap_or(&config.bootstrap.default_environment)
+    };
+    config.environment(name).map(|_| name.to_string())
 }
 
 /// One-time imperative bootstrap for the knr-ops management cluster.
@@ -133,9 +86,10 @@ impl std::fmt::Display for Profile {
 #[command(name = "knr-bootstrap", version, about)]
 struct Cli {
     /// Deployment profile (a non-empty KNR_OPS_PROFILE takes precedence
-    /// over this argument, matching bootstrap.sh; default: aws)
-    #[arg(value_enum)]
-    profile: Option<Profile>,
+    /// over this argument, matching bootstrap.sh; default: the config's
+    /// bootstrap.default-environment). Valid names are the
+    /// [environments.*] sections of bootstrap.toml.
+    profile: Option<String>,
 
     /// Delete and recreate an existing 'mgmt' cluster instead of reusing it.
     /// Required when the profile or the kind/registry configuration changed
@@ -151,7 +105,12 @@ struct Cli {
 /// (including the pivot opt-outs, per the #95 entry-point decision).
 #[derive(Debug)]
 struct Config {
-    profile: Profile,
+    /// The parsed bootstrap.toml (repository-owned values).
+    repo: BootstrapConfig,
+    /// The resolved [environments.*] section name.
+    profile: String,
+    /// The resolved environment section.
+    environment: Environment,
     recreate: bool,
     registry_port: u16,
     registry_ready_retries: u32,
@@ -173,19 +132,37 @@ struct Config {
 }
 
 impl Config {
+    /// The environment's sequence archetype (issue #98 decision 3): the
+    /// names are the binary's opinionated contract, kept as literals.
+    fn is_local(&self) -> bool {
+        self.profile == "local-host"
+    }
+
     /// Resolve the run configuration from the process environment.
-    fn load(cli: &Cli) -> Result<Self> {
-        Self::from_env(cli, |name| std::env::var(name).ok())
+    fn load(cli: &Cli, repo: BootstrapConfig) -> Result<Self> {
+        Self::from_env(cli, repo, |name| std::env::var(name).ok())
     }
 
     /// Build a Config from a lookup over the script's env knobs
     /// (injectable so the resolution logic is unit-testable). An empty
     /// value behaves like unset, matching `${VAR:-default}`.
-    fn from_env(cli: &Cli, get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+    fn from_env(
+        cli: &Cli,
+        repo: BootstrapConfig,
+        get: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self> {
         let value = |name: &str| get(name).filter(|v| !v.is_empty());
         let with_default =
             |name: &str, default: &str| value(name).unwrap_or_else(|| default.to_string());
-        let profile = resolve_profile(value("KNR_OPS_PROFILE").as_deref(), cli.profile)?;
+        let profile = resolve_environment(
+            value("KNR_OPS_PROFILE").as_deref(),
+            cli.profile.as_deref(),
+            &repo,
+        )?;
+        let environment = repo
+            .environment(&profile)
+            .with_context(|| "internal: environment vanished between resolution and lookup")?
+            .clone();
         let registry_port = with_default("REGISTRY_PORT", &DEFAULT_REGISTRY_PORT.to_string())
             .parse::<u16>()
             .context("REGISTRY_PORT must be a port number (1-65535)")?;
@@ -197,10 +174,9 @@ impl Config {
         .context("REGISTRY_READY_RETRIES must be a non-negative integer")?;
         // Pivot knobs are validated here, not in pivot Phase 1, so a bad
         // value fails at startup instead of after the full bootstrap.
-        let mgmt_ready_timeout = value("MGMT_READY_TIMEOUT").unwrap_or_else(|| match profile {
-            Profile::Aws => DEFAULT_MGMT_READY_TIMEOUT_AWS.to_string(),
-            Profile::LocalHost => DEFAULT_MGMT_READY_TIMEOUT_LOCAL.to_string(),
-        });
+        // The per-environment default comes from bootstrap.toml.
+        let mgmt_ready_timeout =
+            value("MGMT_READY_TIMEOUT").unwrap_or_else(|| environment.mgmt_ready_timeout.clone());
         parse_duration_seconds(&mgmt_ready_timeout)
             .context("MGMT_READY_TIMEOUT must be a duration (40m, 2h, 90s, or bare seconds)")?;
         let mgmt_poll_interval = with_default(
@@ -214,7 +190,6 @@ impl Config {
             "MGMT_POLL_INTERVAL must be a positive integer, got 0"
         );
         Ok(Config {
-            profile,
             recreate: cli.recreate,
             registry_port,
             registry_ready_retries,
@@ -242,8 +217,11 @@ impl Config {
             mgmt_poll_interval,
             bootstrap_kubecontext: with_default(
                 "BOOTSTRAP_KUBECONTEXT",
-                DEFAULT_BOOTSTRAP_KUBECONTEXT,
+                &repo.bootstrap.kind_context,
             ),
+            repo,
+            profile,
+            environment: environment.clone(),
         })
     }
 }
@@ -306,10 +284,16 @@ fn extract_workload_port(port_output: &str) -> Option<String> {
 }
 
 /// Render the kind cluster config, mirroring the script's heredoc.
-fn render_kind_config(profile: Profile, registry_port: u16, engine_sock: &str) -> String {
-    let registry_patch = if profile == Profile::LocalHost {
+/// `registry_name` comes from bootstrap.toml ([bootstrap] registry-name).
+fn render_kind_config(
+    is_local: bool,
+    registry_port: u16,
+    engine_sock: &str,
+    registry_name: &str,
+) -> String {
+    let registry_patch = if is_local {
         format!(
-            "containerdConfigPatches:\n  - |-\n    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:{registry_port}\"]\n      endpoint = [\"http://{REGISTRY_NAME}:5000\"]\n"
+            "containerdConfigPatches:\n  - |-\n    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:{registry_port}\"]\n      endpoint = [\"http://{registry_name}:5000\"]\n"
         )
     } else {
         String::new()
@@ -341,39 +325,6 @@ fn parse_duration_seconds(input: &str) -> Result<u64> {
         .with_context(|| format!("duration '{input}' overflows"))
 }
 
-/// Provider CR manifests applied verbatim in the pivot target (NOT the
-/// kustomization dirs: capa-system contains the SOPS-encrypted
-/// aws-credentials which only Flux can decrypt).
-fn provider_manifests(profile: Profile) -> Vec<&'static str> {
-    match profile {
-        Profile::Aws => vec![
-            "mgmt/aws/capi-providers/capi-system/namespace.yaml",
-            "mgmt/aws/capi-providers/capi-system/providers.yaml",
-            "mgmt/aws/capi-providers/capa-system/namespace.yaml",
-            "mgmt/aws/capi-providers/capa-system/providers.yaml",
-            "mgmt/aws/capi-providers/caaph-system/namespace.yaml",
-            "mgmt/aws/capi-providers/caaph-system/addon-provider.yaml",
-        ],
-        Profile::LocalHost => vec![
-            "mgmt/local-host/capi-providers/capi-system/namespace.yaml",
-            "mgmt/local-host/capi-providers/capi-system/providers.yaml",
-            "mgmt/local-host/capi-providers/capd-system/namespace.yaml",
-            "mgmt/local-host/capi-providers/capd-system/provider.yaml",
-            "mgmt/local-host/capi-providers/caaph-system/namespace.yaml",
-            "mgmt/local-host/capi-providers/caaph-system/provider.yaml",
-        ],
-    }
-}
-
-/// (namespace, name) of the environment's infrastructure provider, for the
-/// pivot target's provider Ready wait.
-fn infra_provider(profile: Profile) -> (&'static str, &'static str) {
-    match profile {
-        Profile::Aws => ("capa-system", "aws"),
-        Profile::LocalHost => ("capd-system", "docker"),
-    }
-}
-
 /// Flux Kustomization suspend patch (pivot Phase 4).
 fn suspend_patch() -> serde_json::Value {
     json!({ "spec": { "suspend": true } })
@@ -384,8 +335,10 @@ fn unpause_patch() -> serde_json::Value {
     json!({ "spec": { "paused": false } })
 }
 
-/// Tools required on PATH for the given profile.
-fn required_tools(profile: Profile) -> Vec<&'static str> {
+/// Tools required on PATH for the given profile (local-host needs the
+/// reconciliation-watch and oci-push tools; the environment names are the
+/// binary's sequence contract, issue #98 decision 3).
+fn required_tools(is_local: bool) -> Vec<&'static str> {
     // The binary owns the HTTP checks the scripts used curl for. curl
     // stays required for local-host anyway: the mise oci-push task shells
     // out to curl for its registry availability check. flux is exercised
@@ -393,7 +346,7 @@ fn required_tools(profile: Profile) -> Vec<&'static str> {
     // are pivot tools (clusterctl get kubeconfig / describe / move; mise
     // aws-credentials / oci-push) required on BOTH profiles.
     let mut tools = vec!["kind", "helm", "kubectl", "clusterctl", "mise"];
-    if profile == Profile::LocalHost {
+    if is_local {
         tools.extend(["flux", "curl"]);
     }
     tools
@@ -550,9 +503,8 @@ struct Preflight {
 }
 
 async fn preflight_checks(cfg: &Config, http: &reqwest::Client) -> Result<Preflight> {
-    let profile = cfg.profile;
     // Report every missing tool at once instead of failing on the first.
-    let missing: Vec<&str> = required_tools(profile)
+    let missing: Vec<&str> = required_tools(cfg.is_local())
         .into_iter()
         .filter(|t| !command_exists(t))
         .collect();
@@ -560,7 +512,7 @@ async fn preflight_checks(cfg: &Config, http: &reqwest::Client) -> Result<Prefli
         bail!("missing required tools in PATH: {}", missing.join(", "));
     }
 
-    let aws = if profile == Profile::Aws {
+    let aws = if cfg.profile == "aws" {
         Some(preflight_aws(cfg, http).await?)
     } else {
         None
@@ -641,7 +593,7 @@ async fn preflight_aws(cfg: &Config, http: &reqwest::Client) -> Result<AwsContex
     let github_repo = parse_github_repo(&git_repo_url)
         .context("GIT_REPO_URL must be an HTTPS GitHub repository URL")?;
 
-    let branch_path = GIT_BRANCH.replace('/', "%2F");
+    let branch_path = cfg.repo.bootstrap.git_branch.replace('/', "%2F");
     let url = format!("https://api.github.com/repos/{github_repo}/branches/{branch_path}");
     let status = http
         .get(&url)
@@ -653,7 +605,8 @@ async fn preflight_aws(cfg: &Config, http: &reqwest::Client) -> Result<AwsContex
         .unwrap_or(0);
     if status != 200 {
         bail!(
-            "GitHub repository or branch '{GIT_BRANCH}' is unavailable at '{git_repo_url}' (HTTP {status})"
+            "GitHub repository or branch '{}' is unavailable at '{git_repo_url}' (HTTP {status})",
+            cfg.repo.bootstrap.git_branch
         );
     }
 
@@ -709,25 +662,29 @@ async fn preflight_aws(cfg: &Config, http: &reqwest::Client) -> Result<AwsContex
 /// lets a partially failed bootstrap resume. With --recreate (or when no
 /// cluster exists) the cluster is (re)built from the rendered config.
 async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
+    let kind_cluster = &cfg.repo.bootstrap.kind_cluster;
+    let kind_context = &cfg.repo.bootstrap.kind_context;
     let clusters = capture_lossy("kind", &["get", "clusters"]).await;
-    let exists = clusters.lines().any(|l| l.trim() == "mgmt");
+    let exists = clusters.lines().any(|l| l.trim() == kind_cluster);
     let node_ready_timeout = format!("--timeout={NODE_READY_TIMEOUT}");
 
     if exists && !cfg.recreate {
-        println!(">>> Reusing existing kind cluster 'mgmt' (pass --recreate to replace it)...");
+        println!(
+            ">>> Reusing existing kind cluster '{kind_cluster}' (pass --recreate to replace it)..."
+        );
         println!(">>> Validating existing cluster health...");
-        if !run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await {
+        if !run_quiet("kubectl", &["config", "use-context", kind_context]).await {
             // kind get clusters can report mgmt while the kubeconfig lacks
             // the context (interrupted first create, pruned kubeconfig).
             // Recover it instead of demanding a destructive --recreate.
-            println!(">>> Context 'kind-mgmt' missing from kubeconfig; exporting it...");
-            if !run_quiet("kind", &["export", "kubeconfig", "--name", "mgmt"]).await {
+            println!(">>> Context '{kind_context}' missing from kubeconfig; exporting it...");
+            if !run_quiet("kind", &["export", "kubeconfig", "--name", kind_cluster]).await {
                 bail!(
-                    "failed to export kubeconfig for existing cluster 'mgmt'; rerun with --recreate to replace it"
+                    "failed to export kubeconfig for existing cluster '{kind_cluster}'; rerun with --recreate to replace it"
                 );
             }
         }
-        if run_quiet("kubectl", &["config", "use-context", "kind-mgmt"]).await
+        if run_quiet("kubectl", &["config", "use-context", kind_context]).await
             && run_quiet(
                 "kubectl",
                 &[
@@ -740,34 +697,39 @@ async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
             )
             .await
         {
-            println!(">>> Existing cluster 'mgmt' is healthy; continuing.");
+            println!(">>> Existing cluster '{kind_cluster}' is healthy; continuing.");
             return Ok(());
         }
         bail!(
-            "existing kind cluster 'mgmt' is not healthy (context unreachable or nodes not Ready within {NODE_READY_TIMEOUT}); rerun with --recreate to replace it"
+            "existing kind cluster '{kind_cluster}' is not healthy (context unreachable or nodes not Ready within {NODE_READY_TIMEOUT}); rerun with --recreate to replace it"
         );
     }
 
     if exists {
-        println!(">>> Cluster 'mgmt' exists and --recreate was given – recreating...");
-        run("kind", &["delete", "cluster", "--name", "mgmt"]).await?;
+        println!(">>> Cluster '{kind_cluster}' exists and --recreate was given – recreating...");
+        run("kind", &["delete", "cluster", "--name", kind_cluster]).await?;
     }
 
-    println!(">>> Creating kind cluster 'mgmt'...");
+    println!(">>> Creating kind cluster '{kind_cluster}'...");
     // Mount the host's container engine socket into the kind node at the
     // standard Docker socket path so in-cluster components can reach a
     // Docker-compatible API whether the backend is Docker or Podman.
-    let kind_config = render_kind_config(cfg.profile, cfg.registry_port, engine_sock);
+    let kind_config = render_kind_config(
+        cfg.is_local(),
+        cfg.registry_port,
+        engine_sock,
+        &cfg.repo.bootstrap.registry_name,
+    );
     run_with_stdin(
         "kind",
-        &["create", "cluster", "--name", "mgmt", "--config", "-"],
+        &["create", "cluster", "--name", kind_cluster, "--config", "-"],
         &kind_config,
     )
     .await?;
 
     println!(">>> Waiting for cluster node to be ready...");
     // Explicitly switch kubectl to use the kind cluster context.
-    run("kubectl", &["config", "use-context", "kind-mgmt"]).await?;
+    run("kubectl", &["config", "use-context", kind_context]).await?;
     run(
         "kubectl",
         &[
@@ -789,7 +751,8 @@ async fn bootstrap_local_registry(
 ) -> Result<()> {
     println!(">>> Bootstrapping local container registry...");
     let port = cfg.registry_port;
-    let name_filter = format!("name=^{REGISTRY_NAME}$");
+    let registry_name = &cfg.repo.bootstrap.registry_name;
+    let name_filter = format!("name=^{registry_name}$");
 
     let exists = capture_lossy(
         engine,
@@ -804,10 +767,10 @@ async fn bootstrap_local_registry(
     )
     .await
     .lines()
-    .any(|l| l.trim() == REGISTRY_NAME);
+    .any(|l| l.trim() == registry_name.as_str());
 
     if !exists {
-        println!("    Creating registry container '{REGISTRY_NAME}'...");
+        println!("    Creating registry container '{registry_name}'...");
         let publish = format!("127.0.0.1:{port}:5000");
         capture(
             engine,
@@ -815,7 +778,7 @@ async fn bootstrap_local_registry(
                 "run",
                 "-d",
                 "--name",
-                REGISTRY_NAME,
+                registry_name,
                 "--network",
                 "kind",
                 "-p",
@@ -831,14 +794,14 @@ async fn bootstrap_local_registry(
         // container bound elsewhere or detached from the network answers
         // the host readiness check and then fails in-cluster.
         let port_matches = extract_workload_port(
-            &capture_lossy(engine, &["port", REGISTRY_NAME, "5000/tcp"]).await,
+            &capture_lossy(engine, &["port", registry_name, "5000/tcp"]).await,
         )
         .is_some_and(|p| p.parse::<u16>().is_ok_and(|p| p == port));
         let in_kind_network = capture_lossy(
             engine,
             &[
                 "inspect",
-                REGISTRY_NAME,
+                registry_name,
                 "--format",
                 "{{json .NetworkSettings.Networks}}",
             ],
@@ -847,7 +810,7 @@ async fn bootstrap_local_registry(
         .contains("\"kind\"");
         if !port_matches || !in_kind_network {
             println!("    Existing registry misconfigured (port or network); recreating...");
-            run(engine, &["rm", "-f", REGISTRY_NAME]).await?;
+            run(engine, &["rm", "-f", registry_name]).await?;
             let publish = format!("127.0.0.1:{port}:5000");
             capture(
                 engine,
@@ -855,7 +818,7 @@ async fn bootstrap_local_registry(
                     "run",
                     "-d",
                     "--name",
-                    REGISTRY_NAME,
+                    registry_name,
                     "--network",
                     "kind",
                     "-p",
@@ -872,10 +835,10 @@ async fn bootstrap_local_registry(
             )
             .await
             .lines()
-            .any(|l| l.trim() == REGISTRY_NAME);
+            .any(|l| l.trim() == registry_name.as_str());
             if !running {
                 println!("    Restarting stopped registry...");
-                capture(engine, &["start", REGISTRY_NAME]).await?;
+                capture(engine, &["start", registry_name]).await?;
                 println!("    Registry restarted: localhost:{port}");
             } else {
                 println!("    Registry already running: localhost:{port}");
@@ -922,7 +885,7 @@ async fn bootstrap_local_registry(
                 "name": "local-registry-config",
                 "namespace": "kube-system",
             },
-            "data": { "registry-url": format!("{REGISTRY_NAME}:5000") },
+            "data": { "registry-url": format!("{registry_name}:5000") },
         }),
     )
     .await?;
@@ -931,7 +894,7 @@ async fn bootstrap_local_registry(
     // Forward the resolved values: the mise oci-push task reads them from
     // its own environment, so they must not stop at this boundary.
     let status = Command::new("mise")
-        .args(["-E", "local-host", "run", "oci-push"])
+        .args(["-E", &cfg.profile, "run", "oci-push"])
         .env("REGISTRY_PORT", cfg.registry_port.to_string())
         .env("OCI_REPOSITORY", &cfg.oci_repository)
         .env("OCI_TAG", &cfg.oci_tag)
@@ -939,7 +902,10 @@ async fn bootstrap_local_registry(
         .await
         .with_context(|| "failed to spawn 'mise'")?;
     if !status.success() {
-        bail!("'mise -E local-host run oci-push' failed with {status}");
+        bail!(
+            "'mise -E {} run oci-push' failed with {status}",
+            cfg.profile
+        );
     }
     println!(
         ">>> Initial OCI artifact is available at oci://localhost:{port}/{repo}:{tag}",
@@ -949,22 +915,31 @@ async fn bootstrap_local_registry(
     Ok(())
 }
 
-async fn install_flux_operator(registry_config: &Path, kubeconfig: Option<&str>) -> Result<()> {
+async fn install_flux_operator(
+    repo: &BootstrapConfig,
+    registry_config: &Path,
+    kubeconfig: Option<&str>,
+) -> Result<()> {
     println!(">>> Installing Flux Operator...");
     let cfg = registry_config.to_string_lossy().into_owned();
+    let flux_ns = &repo.bootstrap.flux_namespace;
+    let chart_version = repo
+        .charts
+        .get("flux-operator")
+        .context("charts.flux-operator missing from bootstrap.toml")?;
     // upgrade --install (script used install): rerun-safe after a partial failure.
     // --version pins the chart so reruns cannot resolve a different release
-    // (managed by the renovate annotation on FLUX_CHART_VERSION, as the
-    // HelmRelease in Git is).
+    // (the chart pin lives in bootstrap.toml [charts], kept in sync with
+    // the HelmRelease in Git by the cross-check and Renovate).
     let mut args: Vec<String> = vec![
         "upgrade".into(),
         "--install".into(),
         "flux-operator".into(),
         "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator".into(),
         "--version".into(),
-        FLUX_CHART_VERSION.into(),
+        chart_version.into(),
         "--namespace".into(),
-        "flux-system".into(),
+        flux_ns.into(),
         "--create-namespace".into(),
         "--wait".into(),
         "--timeout".into(),
@@ -979,18 +954,25 @@ async fn install_flux_operator(registry_config: &Path, kubeconfig: Option<&str>)
     run("helm", &arg_refs).await
 }
 
-async fn create_aws_secrets(aws: &AwsContext, kubeconfig: Option<&str>) -> Result<()> {
+async fn create_aws_secrets(
+    repo: &BootstrapConfig,
+    aws: &AwsContext,
+    kubeconfig: Option<&str>,
+) -> Result<()> {
     // Both secrets are applied as manifests on stdin: idempotent on rerun,
     // and no secret material ever appears on argv or in error messages.
+    let flux_ns = &repo.bootstrap.flux_namespace;
+    let pat_secret = &repo.bootstrap.github_pat_secret;
+    let sops_secret = &repo.bootstrap.sops_age_secret;
 
     // Basic-auth secret consumed by Flux's source-controller to clone the repo.
-    println!(">>> Creating GitHub PAT credentials secret in flux-system...");
+    println!(">>> Creating GitHub PAT credentials secret in {flux_ns}...");
     kubectl_apply(
         kubeconfig,
         &json!({
             "apiVersion": "v1",
             "kind": "Secret",
-            "metadata": { "name": "flux-github-pat", "namespace": "flux-system" },
+            "metadata": { "name": pat_secret, "namespace": flux_ns },
             "type": "Opaque",
             "stringData": {
                 "username": aws.github_user,
@@ -1003,7 +985,7 @@ async fn create_aws_secrets(aws: &AwsContext, kubeconfig: Option<&str>) -> Resul
     // Flux's kustomize-controller uses this key to decrypt *.sops.yaml
     // manifests during reconciliation. Flux scans the Secret for keys matching
     // `keys.<public-key>.agekey`.
-    println!(">>> Creating sops-age decryption secret in flux-system...");
+    println!(">>> Creating sops-age decryption secret in {flux_ns}...");
     // Remove any existing sops-age secret to avoid stale keys from previous
     // bootstrap runs (apply alone would merge old key entries).
     run(
@@ -1013,9 +995,9 @@ async fn create_aws_secrets(aws: &AwsContext, kubeconfig: Option<&str>) -> Resul
             &[
                 "delete",
                 "secret",
-                "sops-age",
+                sops_secret,
                 "-n",
-                "flux-system",
+                flux_ns,
                 "--ignore-not-found",
             ],
         ),
@@ -1026,7 +1008,7 @@ async fn create_aws_secrets(aws: &AwsContext, kubeconfig: Option<&str>) -> Resul
         &json!({
             "apiVersion": "v1",
             "kind": "Secret",
-            "metadata": { "name": "sops-age", "namespace": "flux-system" },
+            "metadata": { "name": sops_secret, "namespace": flux_ns },
             "type": "Opaque",
             "stringData": {
                 format!("keys.{}.agekey", aws.age_pubkey): aws.age_key_content,
@@ -1045,15 +1027,21 @@ async fn install_flux_instance(
     println!(">>> Installing FluxInstance via Helm...");
     let mut controllers_ready = true;
     let registry_cfg = registry_config.to_string_lossy().into_owned();
+    let flux_ns = &cfg.repo.bootstrap.flux_namespace;
+    let chart_version = cfg
+        .repo
+        .charts
+        .get("flux-operator")
+        .context("charts.flux-operator missing from bootstrap.toml")?;
     let mut args: Vec<String> = vec![
         "upgrade".into(),
         "--install".into(),
         "flux".into(),
         "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance".into(),
         "--version".into(),
-        FLUX_CHART_VERSION.into(),
+        chart_version.into(),
         "--namespace".into(),
-        "flux-system".into(),
+        flux_ns.into(),
         // Helm 4's watcher strategy treats the FluxInstance's transient
         // InProgress condition as a terminal failure. Use the legacy
         // chart-resource wait here, then wait explicitly for the
@@ -1087,11 +1075,17 @@ async fn install_flux_instance(
                 "--set".into(),
                 format!("instance.sync.url={}", aws.git_repo_url),
                 "--set".into(),
-                "instance.sync.ref=refs/heads/main".into(),
+                format!(
+                    "instance.sync.ref=refs/heads/{}",
+                    cfg.repo.bootstrap.git_branch
+                ),
                 "--set".into(),
-                "instance.sync.path=mgmt/aws".into(),
+                format!("instance.sync.path={}", cfg.environment.sync_path),
                 "--set".into(),
-                "instance.sync.pullSecret=flux-github-pat".into(),
+                format!(
+                    "instance.sync.pullSecret={}",
+                    cfg.repo.bootstrap.github_pat_secret
+                ),
             ]);
         }
         None => {
@@ -1100,13 +1094,14 @@ async fn install_flux_instance(
                 "instance.sync.kind=OCIRepository".into(),
                 "--set".into(),
                 format!(
-                    "instance.sync.url=oci://{REGISTRY_NAME}:5000/{}",
+                    "instance.sync.url=oci://{}:5000/{}",
+                    cfg.repo.bootstrap.registry_name,
                     cfg.oci_repository
                 ),
                 "--set".into(),
                 format!("instance.sync.ref={}", cfg.oci_tag),
                 "--set".into(),
-                "instance.sync.path=mgmt/local-host".into(),
+                format!("instance.sync.path={}", cfg.environment.sync_path),
                 "--set-json".into(),
                 r#"instance.kustomize.patches=[{"patch":"- op: add\n  path: /spec/insecure\n  value: true","target":{"kind":"OCIRepository"}}]"#.into(),
             ]);
@@ -1125,7 +1120,7 @@ async fn install_flux_instance(
                 "wait",
                 "fluxinstance/flux",
                 "--namespace",
-                "flux-system",
+                flux_ns,
                 "--for=condition=Ready",
                 "--timeout=10m",
             ],
@@ -1146,7 +1141,7 @@ async fn install_flux_instance(
             &[
                 "wait",
                 "--namespace",
-                "flux-system",
+                flux_ns,
                 "--for=condition=ready",
                 "pod",
                 "--selector=app.kubernetes.io/part-of=flux",
@@ -1160,7 +1155,7 @@ async fn install_flux_instance(
         eprintln!("WARNING: not all Flux controllers became ready within 90s:");
         let _ = run(
             "kubectl",
-            &kubectl_cmd(kubeconfig, &["get", "pods", "--namespace", "flux-system"]),
+            &kubectl_cmd(kubeconfig, &["get", "pods", "--namespace", flux_ns]),
         )
         .await;
         controllers_ready = false;
@@ -1191,7 +1186,7 @@ async fn watch_local_reconciliation(cfg: &Config, engine: &str) -> Result<()> {
             "kustomization",
             "flux-apps",
             "--namespace",
-            "flux-system",
+            &cfg.repo.bootstrap.flux_namespace,
         ],
         60,
     )
@@ -1210,7 +1205,7 @@ async fn watch_local_reconciliation(cfg: &Config, engine: &str) -> Result<()> {
             "wait",
             "kustomization/flux-apps",
             "--namespace",
-            "flux-system",
+            &cfg.repo.bootstrap.flux_namespace,
             "--for=condition=Ready",
             &timeout_arg,
         ],
@@ -1401,8 +1396,8 @@ async fn pivot_check_context(cfg: &Config) -> Result<()> {
 }
 
 /// Phase 0: the management Cluster definition must exist in kind already.
-async fn pivot_check_management_cluster(mgmt_cluster: &str) -> Result<()> {
-    if !run_quiet("kubectl", &["get", "cluster", mgmt_cluster, "-n", MGMT_NS]).await {
+async fn pivot_check_management_cluster(mgmt_ns: &str, mgmt_cluster: &str) -> Result<()> {
+    if !run_quiet("kubectl", &["get", "cluster", mgmt_cluster, "-n", mgmt_ns]).await {
         eprintln!("ERROR: Cluster '{mgmt_cluster}' not found in the bootstrap cluster.");
         eprintln!("       The management cluster definition must be reconciled first:");
         eprintln!("       aws:        merged to main, Flux-in-kind creates it (~15-25 min)");
@@ -1420,6 +1415,7 @@ async fn pivot_check_management_cluster(mgmt_cluster: &str) -> Result<()> {
 /// waited on instead of erroring immediately. Node readiness is verified in
 /// Phase 2 against the exported kubeconfig.
 async fn pivot_wait_for_management_cluster(cfg: &Config, mgmt_cluster: &str) -> Result<()> {
+    let mgmt_ns = &cfg.repo.bootstrap.mgmt_namespace;
     println!(
         ">>> Waiting for the management cluster kubeconfig (timeout: {})...",
         cfg.mgmt_ready_timeout
@@ -1429,7 +1425,7 @@ async fn pivot_wait_for_management_cluster(cfg: &Config, mgmt_cluster: &str) -> 
     let max_attempts = (timeout_s / cfg.mgmt_poll_interval).max(1);
     let mut found = false;
     for _ in 0..max_attempts {
-        if run_quiet("kubectl", &["get", &secret, "-n", MGMT_NS]).await {
+        if run_quiet("kubectl", &["get", &secret, "-n", mgmt_ns]).await {
             found = true;
             break;
         }
@@ -1438,7 +1434,7 @@ async fn pivot_wait_for_management_cluster(cfg: &Config, mgmt_cluster: &str) -> 
     if !found {
         // One final probe past the budget, mirroring the script's until-loop
         // which tests the condition before declaring failure.
-        found = run_quiet("kubectl", &["get", &secret, "-n", MGMT_NS]).await;
+        found = run_quiet("kubectl", &["get", &secret, "-n", mgmt_ns]).await;
     }
     if !found {
         eprintln!(
@@ -1447,7 +1443,7 @@ async fn pivot_wait_for_management_cluster(cfg: &Config, mgmt_cluster: &str) -> 
         );
         let _ = run(
             "kubectl",
-            &["describe", "cluster", mgmt_cluster, "-n", MGMT_NS],
+            &["describe", "cluster", mgmt_cluster, "-n", mgmt_ns],
         )
         .await;
         bail!(
@@ -1457,7 +1453,7 @@ async fn pivot_wait_for_management_cluster(cfg: &Config, mgmt_cluster: &str) -> 
     }
     let _ = run(
         "clusterctl",
-        &["describe", "cluster", mgmt_cluster, "-n", MGMT_NS],
+        &["describe", "cluster", mgmt_cluster, "-n", mgmt_ns],
     )
     .await;
     Ok(())
@@ -1479,7 +1475,13 @@ async fn pivot_export_kubeconfig(cfg: &Config, engine: &str, mgmt_cluster: &str)
     }
     let kubeconfig = capture(
         "clusterctl",
-        &["get", "kubeconfig", mgmt_cluster, "-n", MGMT_NS],
+        &[
+            "get",
+            "kubeconfig",
+            mgmt_cluster,
+            "-n",
+            &cfg.repo.bootstrap.mgmt_namespace,
+        ],
     )
     .await?;
     std::fs::write(path, &kubeconfig)
@@ -1492,7 +1494,7 @@ async fn pivot_export_kubeconfig(cfg: &Config, engine: &str, mgmt_cluster: &str)
     }
     let kc = path.to_string_lossy().into_owned();
 
-    if cfg.profile == Profile::LocalHost {
+    if cfg.is_local() {
         // CAPD records the load balancer's container-network IP, which is
         // not routable from macOS. Point the kubeconfig at the port
         // published on localhost instead (same rewrite as the workload
@@ -1521,7 +1523,12 @@ async fn pivot_export_kubeconfig(cfg: &Config, engine: &str, mgmt_cluster: &str)
         "kubectl",
         &kubectl_cmd(
             Some(&kc),
-            &["config", "rename-context", &current, MGMT_CONTEXT],
+            &[
+                "config",
+                "rename-context",
+                &current,
+                &cfg.repo.bootstrap.mgmt_context,
+            ],
         ),
     )
     .await?;
@@ -1553,7 +1560,12 @@ async fn pivot_install_capi_in_target(
     registry_config: &Path,
     kc: &str,
 ) -> Result<()> {
-    println!(">>> Installing cert-manager {CERT_MANAGER_VERSION} in the target...");
+    let cert_manager_version = cfg
+        .repo
+        .charts
+        .get("cert-manager")
+        .context("charts.cert-manager missing from bootstrap.toml")?;
+    println!(">>> Installing cert-manager {cert_manager_version} in the target...");
     // upgrade --install (script used install): rerun-safe after a partial
     // failure, same intentional divergence as the #93 helm installs.
     // Values mirror mgmt/<env>/infrastructure/cert-manager/helmrelease.yaml.
@@ -1568,7 +1580,7 @@ async fn pivot_install_capi_in_target(
             "--repo",
             "https://charts.jetstack.io",
             "--version",
-            CERT_MANAGER_VERSION,
+            cert_manager_version,
             "--namespace",
             "cert-manager",
             "--create-namespace",
@@ -1583,7 +1595,12 @@ async fn pivot_install_capi_in_target(
     )
     .await?;
 
-    println!(">>> Installing CAPI operator {CAPI_OPERATOR_VERSION} in the target...");
+    let capi_operator_version = cfg
+        .repo
+        .charts
+        .get("capi-operator")
+        .context("charts.capi-operator missing from bootstrap.toml")?;
+    println!(">>> Installing CAPI operator {capi_operator_version} in the target...");
     // Values mirror mgmt/<env>/infrastructure/capi-operator/helmrelease.yaml.
     run(
         "helm",
@@ -1595,7 +1612,7 @@ async fn pivot_install_capi_in_target(
             "--repo",
             "https://kubernetes-sigs.github.io/cluster-api-operator",
             "--version",
-            CAPI_OPERATOR_VERSION,
+            capi_operator_version,
             "--namespace",
             "capi-operator-system",
             "--create-namespace",
@@ -1611,7 +1628,7 @@ async fn pivot_install_capi_in_target(
     .await?;
 
     println!(">>> Applying provider CRs in the target...");
-    for manifest in provider_manifests(cfg.profile) {
+    for manifest in &cfg.environment.provider_manifests {
         run(
             "kubectl",
             &kubectl_cmd(Some(kc), &["apply", "-f", manifest]),
@@ -1619,7 +1636,7 @@ async fn pivot_install_capi_in_target(
         .await?;
     }
 
-    if cfg.profile == Profile::Aws {
+    if cfg.profile == "aws" {
         // CAPA credentials: the InfrastructureProvider above references the
         // aws-credentials secret (configSecret.name). On the bootstrap
         // cluster Flux decrypts aws-credentials.sops.yaml; here it is
@@ -1629,7 +1646,7 @@ async fn pivot_install_capi_in_target(
         // with the Phase 4 move. The credential travels in a stdin
         // manifest, never on argv.
         println!(">>> Creating CAPA credentials secret in capa-system...");
-        let credentials = capture("mise", &["-E", "aws", "run", "aws-credentials"]).await?;
+        let credentials = capture("mise", &["-E", &cfg.profile, "run", "aws-credentials"]).await?;
         kubectl_apply(
             Some(kc),
             &json!({
@@ -1644,7 +1661,8 @@ async fn pivot_install_capi_in_target(
     }
 
     println!(">>> Waiting for providers in the target...");
-    let (infra_ns, infra_name) = infra_provider(cfg.profile);
+    let infra_ns = &cfg.environment.infra_provider_namespace;
+    let infra_name = &cfg.environment.infra_provider_name;
     let infra_ref = format!("infrastructureprovider/{infra_name}");
     run(
         "kubectl",
@@ -1732,10 +1750,11 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
     // reconcile mid-move (Git carries no spec.paused, so it would unpause
     // the Clusters and recreate deleted objects). kind is abandoned after
     // the pivot, so the suspension is never lifted there.
+    let flux_ns = &cfg.repo.bootstrap.flux_namespace;
     println!(">>> Suspending Flux Kustomizations in the bootstrap cluster...");
     let ks_names = capture_lossy(
         "kubectl",
-        &["get", "kustomizations", "-n", "flux-system", "-o", "name"],
+        &["get", "kustomizations", "-n", flux_ns, "-o", "name"],
     )
     .await;
     let patch = suspend_patch().to_string();
@@ -1743,14 +1762,7 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
         run(
             "kubectl",
             &[
-                "patch",
-                name,
-                "-n",
-                "flux-system",
-                "--type",
-                "merge",
-                "-p",
-                &patch,
+                "patch", name, "-n", flux_ns, "--type", "merge", "-p", &patch,
             ],
         )
         .await?;
@@ -1759,7 +1771,13 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
     println!(">>> Moving the CAPI inventory to the management cluster...");
     if run(
         "clusterctl",
-        &["move", "--to-kubeconfig", kc, "-n", MGMT_NS],
+        &[
+            "move",
+            "--to-kubeconfig",
+            kc,
+            "-n",
+            &cfg.repo.bootstrap.mgmt_namespace,
+        ],
     )
     .await
     .is_err()
@@ -1783,7 +1801,17 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
     let patch = unpause_patch().to_string();
     let clusters = capture_lossy(
         "kubectl",
-        &kubectl_cmd(Some(kc), &["get", "clusters", "-n", MGMT_NS, "-o", "name"]),
+        &kubectl_cmd(
+            Some(kc),
+            &[
+                "get",
+                "clusters",
+                "-n",
+                &cfg.repo.bootstrap.mgmt_namespace,
+                "-o",
+                "name",
+            ],
+        ),
     )
     .await;
     for name in clusters.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -1793,7 +1821,14 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
             &kubectl_cmd(
                 Some(kc),
                 &[
-                    "patch", name, "-n", MGMT_NS, "--type", "merge", "-p", &patch,
+                    "patch",
+                    name,
+                    "-n",
+                    &cfg.repo.bootstrap.mgmt_namespace,
+                    "--type",
+                    "merge",
+                    "-p",
+                    &patch,
                 ],
             ),
         )
@@ -1803,42 +1838,34 @@ async fn pivot_suspend_and_move(cfg: &Config, kc: &str) -> Result<()> {
     println!(">>> Clusters on the management cluster after the move:");
     run(
         "kubectl",
-        &kubectl_cmd(Some(kc), &["get", "clusters", "-n", MGMT_NS]),
+        &kubectl_cmd(
+            Some(kc),
+            &["get", "clusters", "-n", &cfg.repo.bootstrap.mgmt_namespace],
+        ),
     )
     .await?;
 
-    if cfg.profile == Profile::Aws {
-        // The AWSClusterControllerIdentity carries a clusterctl move hook
-        // and comes over with the inventory; verify, and fall back to the
-        // Git manifest only if it is missing.
+    // Move fallbacks ([environments.<name>.move-fallbacks]): objects that
+    // normally come over with the inventory (they carry move hooks) but
+    // are re-applied from the checkout if missing in the target.
+    let mgmt_ns = &cfg.repo.bootstrap.mgmt_namespace;
+    for fallback in &cfg.environment.move_fallbacks {
         if !run_quiet(
             "kubectl",
             &kubectl_cmd(
                 Some(kc),
-                &[
-                    "get",
-                    "awsclustercontrolleridentities.infrastructure.cluster.x-k8s.io",
-                    "default",
-                    "-n",
-                    MGMT_NS,
-                ],
+                &["get", &fallback.resource, &fallback.name, "-n", mgmt_ns],
             ),
         )
         .await
         {
             println!(
-                ">>> AWSClusterControllerIdentity missing after the move; applying from Git..."
+                ">>> {} '{}' missing after the move; applying from Git...",
+                fallback.resource, fallback.name
             );
             run(
                 "kubectl",
-                &kubectl_cmd(
-                    Some(kc),
-                    &[
-                        "apply",
-                        "-f",
-                        "mgmt/aws/infrastructure/aws-identity/identity.yaml",
-                    ],
-                ),
+                &kubectl_cmd(Some(kc), &["apply", "-f", &fallback.manifest]),
             )
             .await?;
         }
@@ -1857,10 +1884,10 @@ async fn pivot_seed_target(
     // aws: syncs mgmt/aws from GitHub main. local-host: syncs
     // mgmt/local-host from the local OCI registry; the artifact must
     // contain the management manifests.
-    if cfg.profile == Profile::LocalHost {
+    if cfg.is_local() {
         println!(">>> Publishing the current checkout as the OCI artifact...");
         let status = Command::new("mise")
-            .args(["-E", "local-host", "run", "oci-push"])
+            .args(["-E", &cfg.profile, "run", "oci-push"])
             .env("REGISTRY_PORT", cfg.registry_port.to_string())
             .env("OCI_REPOSITORY", &cfg.oci_repository)
             .env("OCI_TAG", &cfg.oci_tag)
@@ -1868,22 +1895,33 @@ async fn pivot_seed_target(
             .await
             .context("failed to spawn 'mise'")?;
         if !status.success() {
-            bail!("'mise -E local-host run oci-push' failed with {status}");
+            bail!(
+                "'mise -E {} run oci-push' failed with {status}",
+                cfg.profile
+            );
         }
     }
 
     // seed_flux against the target: the same operator + secrets + instance
     // sequence the bootstrap ran against kind.
-    install_flux_operator(registry_config, Some(kc)).await?;
+    install_flux_operator(&cfg.repo, registry_config, Some(kc)).await?;
     if let Some(aws) = preflight.aws.as_ref() {
-        create_aws_secrets(aws, Some(kc)).await?;
+        create_aws_secrets(&cfg.repo, aws, Some(kc)).await?;
     }
     install_flux_instance(cfg, preflight.aws.as_ref(), registry_config, Some(kc)).await?;
 
     println!(">>> Kustomizations on the management cluster:");
     run(
         "kubectl",
-        &kubectl_cmd(Some(kc), &["get", "kustomizations", "-n", "flux-system"]),
+        &kubectl_cmd(
+            Some(kc),
+            &[
+                "get",
+                "kustomizations",
+                "-n",
+                &cfg.repo.bootstrap.flux_namespace,
+            ],
+        ),
     )
     .await?;
     Ok(())
@@ -1904,14 +1942,24 @@ async fn pivot_delete_bootstrap_cluster(
     // everything (all clusters present; local-host: registry still serving).
     let clusters = capture_lossy(
         "kubectl",
-        &kubectl_cmd(Some(kc), &["get", "clusters", "-n", MGMT_NS, "-o", "name"]),
+        &kubectl_cmd(
+            Some(kc),
+            &[
+                "get",
+                "clusters",
+                "-n",
+                &cfg.repo.bootstrap.mgmt_namespace,
+                "-o",
+                "name",
+            ],
+        ),
     )
     .await;
     if clusters.lines().map(str::trim).all(|l| l.is_empty()) {
         eprintln!("ERROR: no Clusters on the management cluster; refusing to delete kind.");
         bail!("no Clusters on the management cluster; refusing to delete kind");
     }
-    if cfg.profile == Profile::LocalHost && !registry_reachable(http, cfg.registry_port).await {
+    if cfg.is_local() && !registry_reachable(http, cfg.registry_port).await {
         eprintln!(
             "ERROR: local registry unavailable; the management cluster's Flux depends on it."
         );
@@ -1920,7 +1968,16 @@ async fn pivot_delete_bootstrap_cluster(
     }
 
     println!(">>> Deleting the kind bootstrap cluster...");
-    run("kind", &["delete", "cluster", "--name", "mgmt"]).await?;
+    run(
+        "kind",
+        &[
+            "delete",
+            "cluster",
+            "--name",
+            &cfg.repo.bootstrap.kind_cluster,
+        ],
+    )
+    .await?;
 
     println!();
     println!(">>> Pivot complete: the management cluster is self-managed.");
@@ -1932,8 +1989,9 @@ async fn pivot_delete_bootstrap_cluster(
         ">>> Use with: KUBECONFIG={} kubectl get clusters",
         cfg.mgmt_kubeconfig.display()
     );
-    if run_quiet("kubectl", &["config", "use-context", MGMT_CONTEXT]).await {
-        println!(">>> kubectl context switched to {MGMT_CONTEXT}");
+    let mgmt_context = &cfg.repo.bootstrap.mgmt_context;
+    if run_quiet("kubectl", &["config", "use-context", mgmt_context]).await {
+        println!(">>> kubectl context switched to {mgmt_context}");
     } else {
         println!(
             ">>> To use it by default: export KUBECONFIG={}",
@@ -1945,7 +2003,7 @@ async fn pivot_delete_bootstrap_cluster(
 
 /// The pivot: pivot.sh's phases in order, with pivot.sh's messages.
 async fn run_pivot(cfg: &Config, preflight: &Preflight, http: &reqwest::Client) -> Result<()> {
-    let mgmt_cluster = mgmt_cluster_name(cfg.profile);
+    let mgmt_cluster = &cfg.environment.mgmt_cluster;
 
     // ── Phase 0: preflight ────────────────────────────────────────────────
     // Required tools were already checked by the bootstrap preflight
@@ -1953,8 +2011,8 @@ async fn run_pivot(cfg: &Config, preflight: &Preflight, http: &reqwest::Client) 
     // the aws flux-env checks ran in preflight_aws; the GitHub branch
     // check is not repeated here.
     pivot_check_context(cfg).await?;
-    pivot_check_management_cluster(mgmt_cluster).await?;
-    if cfg.profile == Profile::LocalHost && !registry_reachable(http, cfg.registry_port).await {
+    pivot_check_management_cluster(&cfg.repo.bootstrap.mgmt_namespace, mgmt_cluster).await?;
+    if cfg.is_local() && !registry_reachable(http, cfg.registry_port).await {
         eprintln!(
             "ERROR: local registry is unavailable at localhost:{}",
             cfg.registry_port
@@ -2001,8 +2059,11 @@ async fn run_pivot(cfg: &Config, preflight: &Preflight, http: &reqwest::Client) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load the repository config first: profile names, defaults, and chart
+    // pins all come from it (BOOTSTRAP_CONFIG overrides the location).
+    let repo = BootstrapConfig::locate_and_load()?;
     let cli = Cli::parse();
-    let cfg = Config::load(&cli)?;
+    let cfg = Config::load(&cli, repo)?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("knr-bootstrap/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -2018,7 +2079,6 @@ async fn main() -> Result<()> {
 }
 
 async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
-    let profile = cfg.profile;
     let preflight = preflight_checks(cfg, http).await?;
     println!(
         ">>> Using container engine: {} (socket: {})",
@@ -2029,7 +2089,7 @@ async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
     ensure_kind_cluster(cfg, &preflight.engine_sock).await?;
 
     // Step 1.5: bootstrap the local container registry (local-host only).
-    if profile == Profile::LocalHost {
+    if cfg.is_local() {
         bootstrap_local_registry(cfg, &preflight.engine, http).await?;
     }
 
@@ -2044,11 +2104,11 @@ async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
     }
 
     // Step 2: install the Flux Operator.
-    install_flux_operator(registry_config.path(), None).await?;
+    install_flux_operator(&cfg.repo, registry_config.path(), None).await?;
 
     // Step 3: GitHub PAT + SOPS age secrets (aws only).
     if let Some(aws) = preflight.aws.as_ref() {
-        create_aws_secrets(aws, None).await?;
+        create_aws_secrets(&cfg.repo, aws, None).await?;
     }
 
     // Step 4: install the FluxInstance via Helm.
@@ -2056,7 +2116,7 @@ async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
         install_flux_instance(cfg, preflight.aws.as_ref(), registry_config.path(), None).await?;
 
     // Step 5: watch local-host reconciliation.
-    if profile == Profile::LocalHost {
+    if cfg.is_local() {
         watch_local_reconciliation(cfg, &preflight.engine).await?;
     }
 
@@ -2068,32 +2128,31 @@ async fn run_bootstrap(cfg: &Config, http: &reqwest::Client) -> Result<()> {
              check 'kubectl -n flux-system get pods' before relying on the cluster"
         );
     }
-    match profile {
-        Profile::Aws => {
-            let url = preflight
-                .aws
-                .as_ref()
-                .map(|a| a.git_repo_url.as_str())
-                .unwrap_or_default();
-            println!(">>> Bootstrap complete! Flux is now reconciling from {url}");
-            println!(">>> Watch progress with: flux get kustomizations --watch");
-        }
-        Profile::LocalHost => {
-            println!(
-                ">>> Local-host profile complete: Flux is reconciling from the local OCI artifact"
-            );
-            println!(
-                ">>> Local registry: localhost:{port} (cluster endpoint: {REGISTRY_NAME}:5000)",
-                port = cfg.registry_port
-            );
-            println!(
-                ">>> OCI source: oci://{REGISTRY_NAME}:5000/{repo}:{tag} (path: mgmt/local-host)",
-                repo = cfg.oci_repository,
-                tag = cfg.oci_tag
-            );
-            println!(">>> Watch progress with: flux get sources oci --watch");
-            println!(">>> No AWS resources were provisioned");
-        }
+    if cfg.profile == "aws" {
+        let url = preflight
+            .aws
+            .as_ref()
+            .map(|a| a.git_repo_url.as_str())
+            .unwrap_or_default();
+        println!(">>> Bootstrap complete! Flux is now reconciling from {url}");
+        println!(">>> Watch progress with: flux get kustomizations --watch");
+    } else {
+        let registry_name = &cfg.repo.bootstrap.registry_name;
+        println!(
+            ">>> Local-host profile complete: Flux is reconciling from the local OCI artifact"
+        );
+        println!(
+            ">>> Local registry: localhost:{port} (cluster endpoint: {registry_name}:5000)",
+            port = cfg.registry_port
+        );
+        println!(
+            ">>> OCI source: oci://{registry_name}:5000/{repo}:{tag} (path: {})",
+            cfg.environment.sync_path,
+            repo = cfg.oci_repository,
+            tag = cfg.oci_tag
+        );
+        println!(">>> Watch progress with: flux get sources oci --watch");
+        println!(">>> No AWS resources were provisioned");
     }
 
     // The default exit of the bootstrap is the pivot (#95): move the CAPI
@@ -2113,6 +2172,16 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    /// The repository's checked-in bootstrap.toml, as tests' base config.
+    fn repo_config() -> BootstrapConfig {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        BootstrapConfig::load_from(&root.join("../bootstrap.toml")).unwrap()
+    }
+
+    fn config_from(cli: &Cli, get: impl Fn(&str) -> Option<String>) -> Config {
+        Config::from_env(cli, repo_config(), get).unwrap()
+    }
+
     const VALID_AGE_KEY: &str = "# created: 2026-01-01T00:00:00+02:00\n# public key: age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\nAGE-SECRET-KEY-1SECRETSECRETSECRET\n";
 
     #[test]
@@ -2122,7 +2191,10 @@ mod tests {
 
     #[test]
     fn cli_rejects_unknown_profile() {
-        assert!(Cli::try_parse_from(["knr-bootstrap", "bogus"]).is_err());
+        // Positional profile names are validated against bootstrap.toml at
+        // resolution time (they name [environments.*] sections), not by clap.
+        let cli = Cli::try_parse_from(["knr-bootstrap", "bogus"]).unwrap();
+        assert!(Config::from_env(&cli, repo_config(), |_| None).is_err());
     }
 
     #[test]
@@ -2149,12 +2221,11 @@ mod tests {
 
     #[test]
     fn config_defaults_match_script() {
-        let cfg = Config::from_env(
+        let cfg = config_from(
             &Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap(),
             |_| None,
-        )
-        .unwrap();
-        assert_eq!(cfg.profile, Profile::LocalHost);
+        );
+        assert_eq!(cfg.profile, "local-host");
         assert!(!cfg.recreate);
         assert_eq!(cfg.registry_port, 5001);
         assert_eq!(cfg.registry_ready_retries, 120);
@@ -2168,13 +2239,28 @@ mod tests {
         assert!(cfg.github_token.is_none());
         assert!(cfg.age_public_key.is_none());
         // Pivot defaults (pivot.sh): pivot on, keep kind off, per-profile
-        // readiness timeout, 10s polls, kind-mgmt source context.
+        // readiness timeout, 10s polls, kind-mgmt source context. The
+        // per-profile timeout and context now come from bootstrap.toml.
         assert!(cfg.bootstrap_pivot);
         assert!(!cfg.pivot_skip_delete);
         assert_eq!(cfg.mgmt_ready_timeout, "15m"); // local-host default
         assert_eq!(cfg.mgmt_poll_interval, 10);
         assert_eq!(cfg.bootstrap_kubecontext, "kind-mgmt");
         assert_eq!(cfg.mgmt_kubeconfig, default_mgmt_kubeconfig());
+        // Values now sourced from the repository config.
+        assert_eq!(cfg.environment.mgmt_cluster, "local-management");
+        assert_eq!(cfg.environment.sync_path, "mgmt/local-host");
+        assert_eq!(
+            (
+                cfg.environment.infra_provider_namespace.as_str(),
+                cfg.environment.infra_provider_name.as_str()
+            ),
+            ("capd-system", "docker")
+        );
+        assert_eq!(cfg.repo.bootstrap.registry_name, "knr-registry");
+        assert_eq!(cfg.repo.bootstrap.flux_namespace, "flux-system");
+        assert_eq!(cfg.repo.bootstrap.mgmt_namespace, "default");
+        assert_eq!(cfg.repo.charts["flux-operator"], "0.58.0");
     }
 
     #[test]
@@ -2189,8 +2275,8 @@ mod tests {
                 _ => None,
             }
         };
-        let cfg = Config::from_env(&cli, get).unwrap();
-        assert_eq!(cfg.profile, Profile::Aws); // no env, no positional
+        let cfg = Config::from_env(&cli, repo_config(), get).unwrap();
+        assert_eq!(cfg.profile, "aws"); // no env, no positional
         assert_eq!(cfg.registry_port, 5500);
         assert_eq!(cfg.local_reconcile_timeout, "30m");
         assert_eq!(cfg.github_user, "git"); // empty env fell back to default
@@ -2212,7 +2298,7 @@ mod tests {
                 _ => None,
             }
         };
-        let cfg = Config::from_env(&cli, get).unwrap();
+        let cfg = Config::from_env(&cli, repo_config(), get).unwrap();
         assert!(!cfg.bootstrap_pivot); // only literal "1" enables
         assert!(cfg.pivot_skip_delete);
         assert_eq!(cfg.mgmt_ready_timeout, "25m");
@@ -2224,7 +2310,7 @@ mod tests {
     #[test]
     fn config_rejects_invalid_poll_interval() {
         let cli = Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap();
-        let err = Config::from_env(&cli, |name| match name {
+        let err = Config::from_env(&cli, repo_config(), |name| match name {
             "MGMT_POLL_INTERVAL" => Some("often".into()),
             _ => None,
         })
@@ -2237,7 +2323,7 @@ mod tests {
         // 0 parses as u64 but divides by zero in the Phase 1 attempt
         // arithmetic; reject it at startup like any other invalid value.
         let cli = Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap();
-        let err = Config::from_env(&cli, |name| match name {
+        let err = Config::from_env(&cli, repo_config(), |name| match name {
             "MGMT_POLL_INTERVAL" => Some("0".into()),
             _ => None,
         })
@@ -2248,7 +2334,7 @@ mod tests {
     #[test]
     fn config_rejects_invalid_ready_timeout() {
         let cli = Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap();
-        let err = Config::from_env(&cli, |name| match name {
+        let err = Config::from_env(&cli, repo_config(), |name| match name {
             "MGMT_READY_TIMEOUT" => Some("abc".into()),
             _ => None,
         })
@@ -2270,16 +2356,18 @@ mod tests {
     }
 
     #[test]
-    fn mgmt_cluster_names_per_profile() {
-        assert_eq!(mgmt_cluster_name(Profile::Aws), "eu-north-1-management");
-        assert_eq!(mgmt_cluster_name(Profile::LocalHost), "local-management");
-    }
-
-    #[test]
-    fn provider_manifests_match_git_layout() {
-        let aws = provider_manifests(Profile::Aws);
+    fn config_file_carries_the_git_layout() {
+        // The provider lists and infra providers previously compiled into
+        // provider_manifests()/infra_provider() now live in bootstrap.toml;
+        // the Python cross-check (mise run validate) additionally verifies
+        // every declared path exists on disk.
+        let cfg = config_from(
+            &Cli::try_parse_from(["knr-bootstrap", "aws"]).unwrap(),
+            |_| None,
+        );
+        assert_eq!(cfg.environment.mgmt_cluster, "eu-north-1-management");
         assert_eq!(
-            aws,
+            cfg.environment.provider_manifests,
             vec![
                 "mgmt/aws/capi-providers/capi-system/namespace.yaml",
                 "mgmt/aws/capi-providers/capi-system/providers.yaml",
@@ -2289,22 +2377,31 @@ mod tests {
                 "mgmt/aws/capi-providers/caaph-system/addon-provider.yaml",
             ]
         );
-        let local = provider_manifests(Profile::LocalHost);
+        // The AWSClusterControllerIdentity move fallback (previously a
+        // hardcoded path) is declared per environment.
+        assert_eq!(cfg.environment.move_fallbacks.len(), 1);
         assert_eq!(
-            local,
-            vec![
-                "mgmt/local-host/capi-providers/capi-system/namespace.yaml",
-                "mgmt/local-host/capi-providers/capi-system/providers.yaml",
-                "mgmt/local-host/capi-providers/capd-system/namespace.yaml",
-                "mgmt/local-host/capi-providers/capd-system/provider.yaml",
-                "mgmt/local-host/capi-providers/caaph-system/namespace.yaml",
-                "mgmt/local-host/capi-providers/caaph-system/provider.yaml",
-            ]
+            cfg.environment.move_fallbacks[0].manifest,
+            "mgmt/aws/infrastructure/aws-identity/identity.yaml"
         );
-        assert_eq!(infra_provider(Profile::Aws), ("capa-system", "aws"));
+
+        let cfg = config_from(
+            &Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap(),
+            |_| None,
+        );
+        assert_eq!(cfg.environment.mgmt_cluster, "local-management");
+        assert!(cfg.environment.move_fallbacks.is_empty());
+    }
+
+    #[test]
+    fn config_reads_environments_in_file_order() {
+        // The unsupported-profile error lists environments in file order
+        // ('local-host' before 'aws'), preserving bootstrap.sh's wording.
+        let repo = repo_config();
+        let err = resolve_environment(Some("bogus"), None, &repo).unwrap_err();
         assert_eq!(
-            infra_provider(Profile::LocalHost),
-            ("capd-system", "docker")
+            err.to_string(),
+            "unsupported profile 'bogus' (expected 'local-host' or 'aws')"
         );
     }
 
@@ -2317,7 +2414,7 @@ mod tests {
     #[test]
     fn config_rejects_non_numeric_registry_port() {
         let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
-        let err = Config::from_env(&cli, |name| match name {
+        let err = Config::from_env(&cli, repo_config(), |name| match name {
             "REGISTRY_PORT" => Some("not-a-port".into()),
             _ => None,
         })
@@ -2326,25 +2423,32 @@ mod tests {
     }
 
     #[test]
-    fn profile_resolution_matches_script_precedence() {
-        use Profile::{Aws, LocalHost};
+    fn environment_resolution_matches_script_precedence() {
+        let repo = repo_config();
         // Non-empty env wins over the positional, like ${KNR_OPS_PROFILE:-${1:-aws}}.
-        assert_eq!(resolve_profile(Some("aws"), Some(LocalHost)).unwrap(), Aws);
         assert_eq!(
-            resolve_profile(Some("local-host"), Some(Aws)).unwrap(),
-            LocalHost
+            resolve_environment(Some("aws"), Some("local-host"), &repo).unwrap(),
+            "aws"
         );
-        // Empty env falls through to the positional, then aws.
         assert_eq!(
-            resolve_profile(Some(""), Some(LocalHost)).unwrap(),
-            LocalHost
+            resolve_environment(Some("local-host"), Some("aws"), &repo).unwrap(),
+            "local-host"
         );
-        assert_eq!(resolve_profile(Some(""), None).unwrap(), Aws);
-        assert_eq!(resolve_profile(None, Some(Aws)).unwrap(), Aws);
-        assert_eq!(resolve_profile(None, None).unwrap(), Aws);
+        // Empty env falls through to the positional, then the config's
+        // default-environment (aws).
+        assert_eq!(
+            resolve_environment(Some(""), Some("local-host"), &repo).unwrap(),
+            "local-host"
+        );
+        assert_eq!(resolve_environment(Some(""), None, &repo).unwrap(), "aws");
+        assert_eq!(
+            resolve_environment(None, Some("aws"), &repo).unwrap(),
+            "aws"
+        );
+        assert_eq!(resolve_environment(None, None, &repo).unwrap(), "aws");
         // Unknown env values fail with the script's error message.
         assert_eq!(
-            resolve_profile(Some("bogus"), Some(LocalHost))
+            resolve_environment(Some("bogus"), Some("local-host"), &repo)
                 .unwrap_err()
                 .to_string(),
             "unsupported profile 'bogus' (expected 'local-host' or 'aws')"
@@ -2423,13 +2527,13 @@ mod tests {
 
     #[test]
     fn kind_config_includes_registry_patch_for_local_host_only() {
-        let local = render_kind_config(Profile::LocalHost, 5001, "/var/run/docker.sock");
+        let local = render_kind_config(true, 5001, "/var/run/docker.sock", "knr-registry");
         assert!(local.contains("containerdConfigPatches"));
         assert!(local.contains("localhost:5001"));
         assert!(local.contains("http://knr-registry:5000"));
         assert!(local.contains("hostPath: /var/run/docker.sock"));
 
-        let aws = render_kind_config(Profile::Aws, 5001, "/var/run/docker.sock");
+        let aws = render_kind_config(false, 5001, "/var/run/docker.sock", "knr-registry");
         assert!(!aws.contains("containerdConfigPatches"));
         assert!(aws.contains("kind: Cluster"));
         assert!(aws.contains("role: control-plane"));
@@ -2438,9 +2542,9 @@ mod tests {
     #[test]
     fn required_tools_cover_every_invoked_binary() {
         // The pivot invokes clusterctl and mise on both profiles.
-        let aws = required_tools(Profile::Aws);
+        let aws = required_tools(false);
         assert_eq!(aws, vec!["kind", "helm", "kubectl", "clusterctl", "mise"]);
-        let local = required_tools(Profile::LocalHost);
+        let local = required_tools(true);
         assert_eq!(
             local,
             vec![

@@ -70,3 +70,10 @@ provider-manifests = [
   "mgmt/aws/capi-providers/caaph-system/namespace.yaml",
   "mgmt/aws/capi-providers/caaph-system/addon-provider.yaml",
 ]
+
+# Objects clusterctl move should carry over but that are re-applied from
+# the checkout if they are missing in the target after the move.
+[[environments.aws.move-fallbacks]]
+resource = "awsclustercontrolleridentities.infrastructure.cluster.x-k8s.io"
+name = "default"
+manifest = "mgmt/aws/infrastructure/aws-identity/identity.yaml"
