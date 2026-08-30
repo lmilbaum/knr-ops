@@ -38,6 +38,11 @@ if ! python3 -m unittest discover -s airgap/tests -p 'test_*.py'; then
   echo "    FAILED: airgap unit tests" >&2
   fail=1
 fi
+echo "==> bootstrap.toml cross-check"
+if ! python3 tests/test-bootstrap-config.py; then
+  echo "    FAILED: bootstrap.toml cross-check" >&2
+  fail=1
+fi
 for dir in $(find mgmt workload -name kustomization.yaml -exec dirname {} \; | sort -u); do
   echo "==> kustomize build $dir"
   if ! kubectl kustomize "$dir" >/dev/null; then

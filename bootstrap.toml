@@ -1,0 +1,72 @@
+# Repository-owned configuration for knr-bootstrap (issue #98).
+#
+# Everything knr-ops-specific the binary needs is declared here; the binary
+# itself is a generic bootstrap engine. Environment variables (REGISTRY_PORT,
+# GIT_REPO_URL, BOOTSTRAP_KUBECONTEXT, ...) keep their precedence over these
+# values at runtime. Locate this file with BOOTSTRAP_CONFIG when not running
+# from the repository root.
+#
+# Environment order matters: error messages list environments in file order
+# to preserve bootstrap.sh's exact wording ('local-host' before 'aws').
+#
+# Profile resolution: the [environments.*] section name is authoritative;
+# KNR_OPS_PROFILE matches it exactly. Each environment's `kind` restates
+# the section name, and the cross-check fails if the two disagree.
+
+[bootstrap]
+default-environment = "aws"
+git-branch = "main"
+kind-cluster = "mgmt"
+kind-context = "kind-mgmt"
+registry-name = "knr-registry"
+flux-namespace = "flux-system"
+github-pat-secret = "flux-github-pat"
+sops-age-secret = "sops-age"
+mgmt-namespace = "default"
+mgmt-context = "knr-ops-mgmt"
+
+[charts]
+# Chart versions installed imperatively before Flux exists. Keep in sync
+# with the HelmReleases/HelmChartProxies in mgmt/<env>/ so Flux adopts the
+# installs without drift; `mise run validate` cross-checks them and Renovate
+# updates both sides together.
+# flux-operator and flux-instance version together upstream, so this one
+# pin serves both chart installs (FLUX_CHART_VERSION in main.rs).
+# renovate: datasource=docker depName=ghcr.io/controlplaneio-fluxcd/charts/flux-operator
+flux-operator = "0.58.0"
+# renovate: datasource=helm registryUrl=https://charts.jetstack.io depName=cert-manager
+cert-manager = "1.21.1"
+# renovate: datasource=helm registryUrl=https://kubernetes-sigs.github.io/cluster-api-operator depName=cluster-api-operator
+capi-operator = "0.28.0"
+
+[environments.local-host]
+kind = "local-host"
+sync-path = "mgmt/local-host"
+mgmt-cluster = "local-management"
+mgmt-ready-timeout = "15m"
+infra-provider-namespace = "capd-system"
+infra-provider-name = "docker"
+provider-manifests = [
+  "mgmt/local-host/capi-providers/capi-system/namespace.yaml",
+  "mgmt/local-host/capi-providers/capi-system/providers.yaml",
+  "mgmt/local-host/capi-providers/capd-system/namespace.yaml",
+  "mgmt/local-host/capi-providers/capd-system/provider.yaml",
+  "mgmt/local-host/capi-providers/caaph-system/namespace.yaml",
+  "mgmt/local-host/capi-providers/caaph-system/provider.yaml",
+]
+
+[environments.aws]
+kind = "aws"
+sync-path = "mgmt/aws"
+mgmt-cluster = "eu-north-1-management"
+mgmt-ready-timeout = "40m"
+infra-provider-namespace = "capa-system"
+infra-provider-name = "aws"
+provider-manifests = [
+  "mgmt/aws/capi-providers/capi-system/namespace.yaml",
+  "mgmt/aws/capi-providers/capi-system/providers.yaml",
+  "mgmt/aws/capi-providers/capa-system/namespace.yaml",
+  "mgmt/aws/capi-providers/capa-system/providers.yaml",
+  "mgmt/aws/capi-providers/caaph-system/namespace.yaml",
+  "mgmt/aws/capi-providers/caaph-system/addon-provider.yaml",
+]
