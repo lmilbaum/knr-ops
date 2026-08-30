@@ -185,9 +185,9 @@
       "description": "Annotated version constants in bootstrap-rs sources",
       "managerFilePatterns": ["/(^|/)bootstrap-rs/src/[^/]+\\.rs$/"],
       "matchStrings": [
-        "// renovate: datasource=(?<datasource>[a-z0-9-]+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>[a-z0-9-]+))?\\nconst (?<constName>[A-Z0-9_]+): &str = \"(?<currentValue>[^\"]+)\""
+        "// renovate: datasource=(?<datasource>[a-z0-9-]+)(?: registryUrl=(?<registryUrl>\\S+))? depName=(?<depName>\\S+)(?: versioning=(?<versioning>[a-z0-9-]+))?\\nconst (?<constName>[A-Z0-9_]+): &str = \\\"(?<currentValue>[^\"]+)\\\""
       ],
-      "autoReplaceStringTemplate": "// renovate: datasource={{{datasource}}} depName={{{depName}}}{{#if versioning}} versioning={{{versioning}}}{{/if}}\nconst {{{constName}}}: &str = \"{{{newValue}}}\""
+      "autoReplaceStringTemplate": "// renovate: datasource={{{datasource}}}{{#if registryUrl}} registryUrl={{{registryUrl}}}{{/if}} depName={{{depName}}}{{#if versioning}} versioning={{{versioning}}}{{/if}}\nconst {{{constName}}}: &str = \"{{{newValue}}}\""
     },
     {
       "customType": "regex",
