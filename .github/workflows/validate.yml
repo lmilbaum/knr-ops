@@ -79,6 +79,9 @@ jobs:
           RENOVATE_GITHUB_COM_TOKEN: ${{ github.token }}
         run: python3 tests/test-renovate-coverage.py
 
+      - name: bootstrap.toml cross-check
+        run: python3 tests/test-bootstrap-config.py
+
   yaml-lint:
     name: Lint YAML
     runs-on: ubuntu-latest
