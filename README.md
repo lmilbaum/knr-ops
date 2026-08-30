@@ -31,7 +31,7 @@ workload cluster, a second Flux instance, and a Podinfo app reachable from
 your laptop. It covers the complete GitOps, CAPI, and pivot lifecycle without
 provisioning AWS resources.
 
-The imperative part of the lifecycle — bootstrap, pivot, and teardown — is a
+The imperative part of the lifecycle (bootstrap, pivot, and teardown) is a
 single Rust CLI, [`knr-bootstrap`](docs/bootstrap-cli.md), that replaces the
 shell scripts as they complete parity runs. After the one-time bootstrap and
 pivot, **everything is declared in Git as YAML**. The `aws` environment
@@ -145,7 +145,7 @@ suspends Flux and removes the AWS-managed infrastructure.
 
 The imperative lifecycle steps run through a single Rust binary,
 `knr-bootstrap` ([docs/bootstrap-cli.md](docs/bootstrap-cli.md)): it creates
-the disposable kind cluster, hands off to Flux, and — by default — pivots the
+the disposable kind cluster, hands off to Flux, and (by default) pivots the
 CAPI inventory into the self-managed management cluster before deleting kind.
 Reruns are safe by default (a healthy cluster is reused, every step is
 idempotent), so a failed run resumes by rerunning. The shell scripts

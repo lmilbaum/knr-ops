@@ -142,7 +142,7 @@ konflate (no dependencies)
 The `eu-north-1` cluster definitions include the management cluster itself
 (`clusters/management/`): after the pivot, the management cluster's own Flux
 instance reconciles the Cluster objects that define it. The bootstrap kind
-cluster no longer exists at this point — nothing runs from an operator's
+cluster no longer exists at this point; nothing runs from an operator's
 laptop.
 
 ## PR review: konflate

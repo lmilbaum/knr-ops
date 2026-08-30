@@ -1,7 +1,7 @@
 # The bootstrap CLI (knr-bootstrap)
 
-The imperative part of knr-ops — the one-time bootstrap, the CAPI pivot into
-the self-managed management cluster, and (once its port lands) the teardown —
+The imperative part of knr-ops (the one-time bootstrap, the CAPI pivot into
+the self-managed management cluster, and, once its port lands, the teardown)
 lives in a single Rust binary, `knr-bootstrap`, in [`bootstrap-rs/`](../bootstrap-rs/).
 Everything the binary runs is a one-time imperative step; after it finishes,
 Flux owns the world and the binary is not needed again until teardown.
@@ -105,7 +105,7 @@ warning are in [Operations: pivot recovery](./operations.md#pivot-recovery).
 
 The shell scripts stay in the repository until the binary has completed full
 real runs per profile; they are removed in a follow-up once both parity gates
-pass. `mise run bootstrap` and `mise run pivot` still invoke the scripts —
+pass. `mise run bootstrap` and `mise run pivot` still invoke the scripts;
 run the binary from `bootstrap-rs/` until the switchover. Chart versions the
 binary installs imperatively are pinned as Renovate-annotated constants in
 `bootstrap-rs/src/main.rs` and grouped with their manifest counterparts (see

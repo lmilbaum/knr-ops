@@ -220,7 +220,7 @@ Bootstrap ends with a pivot: the CAPI inventory moves from the local `mgmt`
 kind cluster into the self-managed management cluster, and the kind cluster
 is deleted. `mise run bootstrap` runs the pivot by default
 (`BOOTSTRAP_PIVOT=0` opts out); `mise run pivot` runs it standalone. The
-Rust CLI runs the same flow with resume-safe reruns — see
+Rust CLI runs the same flow with resume-safe reruns; see
 [the bootstrap CLI](./bootstrap-cli.md) for its interface and knobs.
 
 `clusterctl move` is re-runnable: an object is deleted from the source kind
