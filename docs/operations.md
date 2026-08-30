@@ -210,6 +210,37 @@ aws s3api get-bucket-encryption    --bucket knr-ops-<account>-eu-north-1-workloa
 aws s3api get-public-access-block  --bucket knr-ops-<account>-eu-north-1-workload-data
 ```
 
+## Pivot recovery
+
+Bootstrap ends with a pivot: the CAPI inventory moves from the local `mgmt`
+kind cluster into the self-managed management cluster, and the kind cluster
+is deleted. `mise run bootstrap` runs the pivot by default
+(`BOOTSTRAP_PIVOT=0` opts out); `mise run pivot` runs it standalone.
+
+`clusterctl move` is re-runnable: an object is deleted from the source kind
+cluster only after it was created on the target, so kind stays authoritative
+until the final kind deletion. If a pivot phase fails:
+
+1. Fix the reported cause.
+2. Re-run the pivot (`mise run pivot`, or rerun the bootstrap), from a
+   checkout of the revision you want self-managed (normally `main`). The
+   current kubectl context must be the bootstrap context (`kind-mgmt`;
+   `BOOTSTRAP_KUBECONTEXT` overrides). The Rust CLI additionally reuses an
+   existing healthy `mgmt` kind cluster on rerun.
+3. Set `PIVOT_SKIP_DELETE=1` to keep the kind bootstrap cluster around for
+   inspection once the pivot completes.
+
+> Note: never delete moved `Cluster`, `AWSManaged*`, `MachinePool`, or
+> `Dev*` objects on the target cluster to work around a failure. The CAPI
+> providers treat deletion as deprovisioning and destroy the real
+> infrastructure (EKS clusters, VPCs, IAM roles; CAPD the local containers).
+> Re-run the move instead. Only pure-config duplicates without a move hook
+> (for example an identity created by hand during a failed install) are safe
+> to delete.
+
+The management kubeconfig is written to `MGMT_KUBECONFIG` (default
+`~/.kube/knr-ops-mgmt.yaml`, context `knr-ops-mgmt`).
+
 ## Teardown
 
 ```sh
