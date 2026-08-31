@@ -68,16 +68,16 @@ mise x -- zarf tools download-init \
   --output-directory airgap/archives
 
 HOST_IMAGES=(
-  kindest/node:v1.36.1
-  kindest/node:v1.35.0
+  kindest/node:v1.37.0
+  kindest/node:v1.37.0
   kindest/haproxy:v20230606-42a2262b
   docker.io/library/registry:2
 )
 for img in "${HOST_IMAGES[@]}"; do
   docker pull --platform linux/arm64 "$img" >/dev/null
 done
-docker save -o airgap/archives/kindest_node_v1.36.1_mgmt.tar kindest/node:v1.36.1
-docker save -o airgap/archives/kindest_node_v1.35.0.tar kindest/node:v1.35.0
+docker save -o airgap/archives/kindest_node_v1.36.1_mgmt.tar kindest/node:v1.37.0
+docker save -o airgap/archives/kindest_node_v1.35.0.tar kindest/node:v1.37.0
 docker save -o airgap/archives/kindest_haproxy_v20230606-42a2262b.tar kindest/haproxy:v20230606-42a2262b
 docker save -o airgap/archives/docker.io_library_registry_2.tar docker.io/library/registry:2
 echo "    saved Zarf init package and host-daemon image archives"

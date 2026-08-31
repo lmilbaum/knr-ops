@@ -7,7 +7,7 @@ safely in Git and Flux decrypts them at reconcile time.
 - **`.sops.yaml`** declares the age *public* key (safe to commit) and a rule
   that encrypts only `data`/`stringData` fields of any `*.sops.yaml` file under
   `mgmt/aws/`.
-- The age *private* key lives in `age.agekey` (gitignored). `bootstrap.sh`
+- The age *private* key lives in `age.agekey` (gitignored). The bootstrap
   loads it into the cluster as the `sops-age` secret in `flux-system`.
 
 SOPS-encrypted secrets in this repo (each referenced by a Flux `Kustomization`
@@ -56,7 +56,7 @@ mise run sops-decrypt <file>.sops.yaml
 ## Setting / rotating the GitHub PAT
 
 The management cluster's own `flux-github-pat` secret is created imperatively
-by `bootstrap.sh` (from `GITHUB_TOKEN` in `.env`) and is **not** in Git — Flux
+at bootstrap (from `GITHUB_TOKEN` in `.env`) and is **not** in Git — Flux
 needs it to clone the repo before it could ever decrypt anything (a
 chicken-and-egg constraint). The workload clusters' copy *is* in Git
 (`flux-pull-secret.sops.yaml`) because the management cluster's Flux decrypts
