@@ -1,7 +1,7 @@
 min_version = "2026.8.10"
 
 [tools]
-go = "1.26"
+go = "1.27.0"
 python = "3.13"
 kubectl = "1.35"
 kind = "0.32"
