@@ -33,8 +33,8 @@ registry.k8s.io/coredns/coredns:v1.14.2
 registry.k8s.io/kube-apiserver:v1.37.0
 registry.k8s.io/kube-controller-manager:v1.37.0
 registry.k8s.io/kube-proxy:v1.36.1
+registry.k8s.io/etcd:3.7.1-0
 registry.k8s.io/kube-scheduler:v1.37.0
-registry.k8s.io/etcd:3.6.8-0
 registry.k8s.io/pause:3.10
 docker.io/kindest/kindnetd:v20260528-9350166c
 docker.io/kindest/local-path-provisioner:v20260521-9fb22683
@@ -56,9 +56,8 @@ registry.k8s.io/coredns/coredns:v1.13.1
 registry.k8s.io/kube-apiserver:v1.37.0
 registry.k8s.io/kube-controller-manager:v1.37.0
 registry.k8s.io/kube-proxy:v1.35.0
+registry.k8s.io/etcd:3.7.1-0
 registry.k8s.io/kube-scheduler:v1.37.0
-registry.k8s.io/etcd:3.6.6-0
-registry.k8s.io/pause:3.10
 registry.k8s.io/pause:3.10.1
 # workload cluster runs its own Flux (synced from knr-registry:5000)
 ghcr.io/controlplaneio-fluxcd/flux-operator:v0.58.0
