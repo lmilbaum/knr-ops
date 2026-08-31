@@ -1,6 +1,6 @@
 {
   // Renovate config for knr-ops (issue #74).
-  // Runs via scheduled GitHub Actions (see .github/workflows/renovate.yml).
+  // Runs via the hosted Renovate GitHub App (issue #90).
   // Version sources covered:
   //   - Flux / Helm / Kubernetes manifests under mgmt/ and workload/
   //   - GitHub Actions workflow action pins (.github/workflows/)

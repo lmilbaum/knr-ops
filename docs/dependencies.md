@@ -5,9 +5,9 @@ Kubernetes/Flux manifests, HelmRelease charts, GitHub Actions workflows, the
 airgap image inventory, zarf.yaml, and annotated version constants in
 bootstrap-rs sources. There is no central catalog. Renovate discovers every
 pinned version in those files and opens update PRs, configured in
-[`renovate.json5`](../renovate.json5) and running weekly via the `renovate`
-GitHub Actions workflow. Pending and proposed updates are tracked in the
-Renovate dependency dashboard issue.
+[`renovate.json5`](../renovate.json5) and running weekly via the hosted
+Renovate GitHub App (issue #90). Pending and proposed updates are tracked in
+the Renovate dependency dashboard issue.
 
 ## Managed surfaces
 
@@ -35,8 +35,8 @@ pinning behavior are defined in [`renovate.json5`](../renovate.json5).
 
 ## Update procedure
 
-1. Wait for a Renovate PR, or trigger the `renovate` workflow manually with
-   `workflow_dispatch` (dry-run by default).
+1. Wait for a Renovate PR. For troubleshooting, a local dry-run command is
+   documented in [AGENTS.md](../AGENTS.md) ("Editing renovate.json5").
 2. Review the rendered diff; CI (`validate` workflow) builds every kustomize
    overlay and checks the airgap image inventory on each update PR.
 3. Merge manually; nothing automerges.
