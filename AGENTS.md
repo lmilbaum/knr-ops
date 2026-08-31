@@ -116,7 +116,11 @@ GITHUB_COM_TOKEN=$(gh auth token) RENOVATE_TOKEN=$(gh auth token) \
   renovate --platform=local --dry-run=full > /tmp/rv.log 2>&1
 ```
 
-Pin the CLI version (unversioned npx resolves "latest" inconsistently).
+Pin the CLI version (unversioned npx resolves "latest" inconsistently) and
+run it on Node >= 24.11 (renovate's `engines` field; the CI renovate job
+pins node 24). On older Node the dry-run logs an `unhandledRejection`
+(`RegExp.escape is not a function`) and still exits 0: a green-looking
+silent no-op.
 Without `GITHUB_COM_TOKEN` every GitHub datasource lookup skips, hiding
 dead depNames. Read the "Dependency extraction complete" stats and compare
 `fileCount`/`depCount` per manager against what the change claims to
@@ -140,8 +144,9 @@ Traps that have bitten this repo (each caught in a live review):
   python/cpython); use `github-tags` or `golang-version`.
 
 Repo gates: `tests/test-renovate-coverage.py` (every managed pin is
-discovered) and the digest-pinning test run in `mise run validate` and
-CI. They do not cover lookup liveness or the replacement path; only the
+discovered) and the digest-pinning test run in CI only (the validate.yml
+`renovate-digest-pinning` job), not in `mise run validate`. They do not
+cover lookup liveness or the replacement path; only the
 dry-run and the handlebars simulation cover those.
 
 ## Where to look next
