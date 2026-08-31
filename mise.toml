@@ -2,8 +2,9 @@ min_version = "2026.8.10"
 
 [tools]
 go = "1.26"
+kubectl = "1.37.0"
 python = "3.14.7"
-kubectl = "1.35"
+kubectl = "1.37"
 kind = "0.33.0"
 helm = "4.2"
 clusterctl = "1.14.0"
