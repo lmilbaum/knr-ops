@@ -79,6 +79,12 @@ def main() -> int:
         for manifest in env.get("provider-manifests", []):
             if not (REPO_ROOT / manifest).is_file():
                 failures.append(f"environments.{name} provider manifest missing: {manifest}")
+        for fallback in env.get("move-fallbacks", []):
+            if not (REPO_ROOT / fallback.get("manifest", "")).is_file():
+                failures.append(
+                    f"environments.{name} move-fallback manifest missing: "
+                    f"{fallback.get('manifest')}"
+                )
 
     if failures:
         print("bootstrap.toml cross-check FAILED:")

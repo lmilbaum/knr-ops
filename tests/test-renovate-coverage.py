@@ -17,7 +17,7 @@ import tempfile
 
 
 EXPECTED = {
-    "bootstrap-rs/src/main.rs": {
+    "bootstrap.toml": {
         "ghcr.io/controlplaneio-fluxcd/charts/flux-operator",
         "cert-manager",
         "cluster-api-operator",
