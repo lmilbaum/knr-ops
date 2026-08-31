@@ -86,7 +86,7 @@ spec:
     spec:
       backend:
         docker:
-          customImage: kindest/node:v1.35.0
+          customImage: kindest/node:v1.37.0
           extraMounts:
             - hostPath: /var/run/docker.sock
               containerPath: /var/run/docker.sock
@@ -101,7 +101,7 @@ spec:
     spec:
       backend:
         docker:
-          customImage: kindest/node:v1.35.0
+          customImage: kindest/node:v1.37.0
           extraMounts:
             - hostPath: /var/run/docker.sock
               containerPath: /var/run/docker.sock
