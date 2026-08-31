@@ -5,7 +5,8 @@ that copies the real renovate.json5 plus selected repo files, parses the JSON
 log event stream, and returns per-file dependency/update data for assertions.
 No writes, no branches, no PRs (lookup only).
 
-Node requirement: Renovate 44.50.1 needs Node >= 24 (RegExp.escape). CI sets
+Node requirement: Renovate 44.50.1 declares Node ^24.11.0 in `engines`
+(RegExp.escape). CI sets
 up Node 24 in the validate.yml renovate job; locally run under a Node 24
 toolchain, e.g. `mise x node@24 -- python3 tests/test-renovate-coverage.py`.
 

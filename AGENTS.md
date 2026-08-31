@@ -158,7 +158,7 @@ discovered) and the digest-pinning test run in CI only (the validate.yml
 `renovate-digest-pinning` job), not in `mise run validate`. Both run on the
 shared harness `tests/renovate_harness.py` (issue #97): a new Renovate test
 is a file list plus assertions, never a copy of the subprocess/parsing
-logic. The harness needs Node >= 24 (Renovate 44.50.1 uses `RegExp.escape`);
+logic. The harness needs Node >= 24.11 (renovate's `engines` field);
 locally: `mise x node@24 -- python3 tests/test-renovate-coverage.py`. They
 do not cover lookup liveness or the replacement path; only the
 dry-run and the handlebars simulation cover those.
