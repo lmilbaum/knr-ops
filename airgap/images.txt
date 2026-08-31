@@ -31,7 +31,7 @@ registry.k8s.io/cluster-api-helm/cluster-api-helm-controller:v0.6.4
 gcr.io/k8s-staging-cluster-api/capd-manager:v1.14.0
 registry.k8s.io/coredns/coredns:v1.14.2
 registry.k8s.io/kube-apiserver:v1.36.1
-registry.k8s.io/kube-controller-manager:v1.36.1
+registry.k8s.io/kube-controller-manager:v1.37.0
 registry.k8s.io/kube-proxy:v1.36.1
 registry.k8s.io/kube-scheduler:v1.37.0
 registry.k8s.io/etcd:3.6.8-0
@@ -54,7 +54,7 @@ docker.io/kindest/local-path-provisioner:v20251212-v0.29.0-alpha-105-g20ccfc88
 docker.io/kindest/local-path-helper:v20251211-v0.29.0-alpha-100-g82a92c5d
 registry.k8s.io/coredns/coredns:v1.13.1
 registry.k8s.io/kube-apiserver:v1.35.0
-registry.k8s.io/kube-controller-manager:v1.35.0
+registry.k8s.io/kube-controller-manager:v1.37.0
 registry.k8s.io/kube-proxy:v1.35.0
 registry.k8s.io/kube-scheduler:v1.37.0
 registry.k8s.io/etcd:3.6.6-0
