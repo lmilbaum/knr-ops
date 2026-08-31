@@ -18,7 +18,8 @@ resources. There is no app source code here, only declarative infrastructure.
   - `addons/flux-apps/`: installs Flux on each workload cluster
     (HelmChartProxy + ClusterResourceSets).
   - `clusters/`: EKS cluster definitions per region (`eu-north-1`,
-    `eu-west-1`).
+    `eu-west-1`); `eu-north-1` also defines the self-managed management
+    cluster (`clusters/management/`).
 - `mgmt/local-host/`: the local-host management variant (kind-based).
   Same layout as `mgmt/aws/` (`clusters/docker`, `capi-providers/`,
   `addons/`, `infrastructure/`) with no cloud dependencies.
@@ -40,8 +41,17 @@ resources. There is no app source code here, only declarative infrastructure.
   attempted). Both deploy evidence artifacts are uploaded. Running both is
   a temporary comparison of validation accuracy and performance; the less
   effective job will be removed after enough runs are evaluated.
-- `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
-  kind + Flux bootstrap, full teardown).
+- `bootstrap-rs/`: `knr-bootstrap`, the Rust CLI that ports the imperative
+  lifecycle (bootstrap + pivot; teardown under issue #100). Behavioral port:
+  same step order, messages, and env interface as the scripts, plus
+  rerun-safe-by-default semantics. Chart versions it installs imperatively
+  are Renovate-annotated constants in `src/main.rs`. CI (bootstrap-rs
+  workflow) runs fmt/clippy/build/test; the toolchain is pinned in
+  `rust-toolchain.toml`.
+- `bootstrap.sh` / `pivot.sh` / `teardown.sh`: the shell equivalents of the
+  CLI's phases. Kept until the binary completes full parity runs per
+  environment, then retired (issues #92/#95/#100). `mise run bootstrap` and
+  `mise run pivot` still invoke the scripts.
 - `docs/`: detailed documentation (see the table in README.md).
 - `mise.toml`: pinned tool versions and all task entrypoints.
   `mise.aws.toml` is the AWS tool layer (aws-cli, clusterawsadm),
@@ -99,7 +109,7 @@ Each component pairs a plain kustomize root with a Flux `Kustomization`:
 ```sh
 mise install            # install pinned tools (kubectl, kind, flux, sops, age, ...)
 mise run validate       # build every kustomize overlay; mirrors CI
-mise run bootstrap      # one-time kind cluster + Flux handoff
+mise run bootstrap      # one-time kind cluster + Flux handoff + pivot to self-managed mgmt
 mise -E aws run kubeconfigs  # export AWS workload-cluster kubeconfigs
 mise run teardown       # full teardown (EKS, AWS resources, kind)
 ```
@@ -154,6 +164,7 @@ dry-run and the handlebars simulation cover those.
 Load these only when the task touches their domain:
 
 - `docs/architecture.md`: reconciliation order, how workload apps are delivered.
+- `docs/bootstrap-cli.md`: the `knr-bootstrap` Rust CLI: interface, env knobs, pivot, parity status.
 - `docs/extending.md`: adding a workload cluster, adding apps, adding other providers (Azure, Talos, k0smotron).
 - `docs/secrets.md`: SOPS + age setup, credential rotation.
 - `docs/konflate.md`: rendered PR review, CI gate, tokens, write-back.
