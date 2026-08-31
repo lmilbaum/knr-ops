@@ -10,18 +10,20 @@ mise install
 ```
 
 This provides `kubectl`, `kind`, `helm`, `flux`, `clusterctl`, `go`, `sops`,
-`age`, and the `zarf` CLI. The `aws` profile layers on `aws-cli` and
-`clusterawsadm` (`mise -E aws install`); the `local-host` profile needs no
-extra tools.
+`age`, and the `zarf` CLI. The `aws` environment layers on `aws-cli` and
+`clusterawsadm` (`mise -E aws install`); the `local-host` environment needs
+no extra tools. Building the bootstrap CLI additionally requires a Rust
+toolchain ([rustup](https://rustup.rs/); the pin lives in
+`bootstrap-rs/rust-toolchain.toml`).
 
 You also need:
 
 - A running container engine for kind: Docker, or Podman 5.5+ (auto-detected
-  by `bootstrap.sh`; set `CONTAINER_ENGINE=docker|podman` to override).
-  For local-host profile: the same engine is used to host the local container
-  registry for OCI artifacts.
+  at bootstrap; set `CONTAINER_ENGINE=docker|podman` to override).
+  For local-host environment: the same engine is used to host the local
+  container registry for OCI artifacts.
 
-**AWS profile only:**
+**AWS environment only:**
 - A GitHub personal access token (PAT) with read access to this repository
   (fine-grained with read-only Contents permission, or classic with `repo`
   scope). The Flux Operator chart is pulled anonymously.
@@ -63,14 +65,14 @@ cp .env.example .env
 $EDITOR .env
 ```
 
-The Flux Operator chart is pulled anonymously for both profiles. The GitHub PAT,
-AWS credentials, and `AWS_REGION` are only needed with the AWS profile.
+The Flux Operator chart is pulled anonymously for both environments. The GitHub PAT,
+AWS credentials, and `AWS_REGION` are only needed with the AWS environment.
 
 ## Bootstrap
 
 ```sh
-mise run bootstrap                 # AWS profile
-mise -E local-host run bootstrap   # local-host profile
+mise run bootstrap                 # AWS environment
+mise -E local-host run bootstrap   # local-host environment
 ```
 
 > Before the first bootstrap, generate an age key for SOPS (see
@@ -83,12 +85,14 @@ This is the only imperative step. It:
 3. Creates the `flux-github-pat` secret (for Git access) and the `sops-age`
    secret (the age private key Flux uses to decrypt SOPS-encrypted secrets).
 4. Installs a `FluxInstance` that syncs `mgmt/aws/` and hands off to GitOps.
+5. Pivots: moves the CAPI inventory into the self-managed management cluster
+   and deletes the kind cluster (see [Pivot recovery](#pivot-recovery)).
 
 Everything downstream — providers, EKS clusters, workload Flux instances, the
 ACK operator, IAM role, pod identity bindings, and S3 buckets — reconciles
 from Git with no further manual steps.
 
-The local-host profile performs the cluster, Flux Operator, and FluxInstance
+The local-host environment performs the cluster, Flux Operator, and FluxInstance
 steps in the `mgmt` management cluster, but does not create GitHub or SOPS
 secrets. Instead, it bootstraps a local Docker Registry container (`registry:2`)
 running on the host machine (accessible at `localhost:5001` by default),
@@ -102,14 +106,14 @@ FluxInstance on `local-workload`; that instance reconciles
 `workload/local-host/` from the same OCI artifact. CAPD is intended for local
 development and testing, not production.
 
-Together, these stages make `local-host` an end-to-end profile: one command
+Together, these stages make `local-host` an end-to-end environment: one command
 bootstraps the management control plane, publishes and reconciles the OCI
 configuration, provisions a workload cluster through CAPI, installs a distinct
 Flux control plane on that cluster, and reconciles a reachable Podinfo workload.
 It exercises the complete cluster-to-workload GitOps lifecycle locally; only
 the AWS-specific infrastructure and ACK resources are outside its scope.
 
-**OCI Registry (local-host profile only):**
+**OCI Registry (local-host environment only):**
 - Provides a local container registry for development workflows
 - Enables developers to build and push OCI artifacts from git checkouts
 - Flux syncs and deploys the OCI artifact without external dependencies
@@ -126,7 +130,7 @@ OCI_REPOSITORY=my-config OCI_TAG=v1 \
   mise -E local-host run oci-push
 
 # FluxInstance pulls and reconciles the artifact's mgmt/local-host kustomization.
-# bootstrap.sh configures kind's containerd to mirror localhost:5001 to the
+# The bootstrap configures kind's containerd to mirror localhost:5001 to the
 # registry's in-cluster endpoint, knr-registry:5000.
 ```
 
@@ -135,7 +139,7 @@ preserving those directory paths when the artifact is pulled. Keeping the
 source scope narrow also prevents local credentials and age private keys
 elsewhere in the repository from being packaged.
 
-The AWS profile adds the GitHub/SOPS secrets and configures the FluxInstance to sync `mgmt/aws/`.
+The AWS environment adds the GitHub/SOPS secrets and configures the FluxInstance to sync `mgmt/aws/`.
 
 Watch reconciliation:
 
@@ -143,7 +147,7 @@ Watch reconciliation:
 flux get kustomizations --watch
 ```
 
-For the local-host profile, export and verify the CAPD workload kubeconfig after
+For the local-host environment, export and verify the CAPD workload kubeconfig after
 `docker-workload-cluster` reports Ready:
 
 ```sh
@@ -163,7 +167,7 @@ Then browse to <http://localhost:9898>. Press Ctrl-C to stop forwarding.
 The workload uses Kubernetes v1.35.0. A CAPI ClusterResourceSet installs a
 pinned Kindnet daemon as its CNI before the Flux addons are delivered.
 The management cluster needs access to the container-engine socket, which
-`bootstrap.sh` mounts automatically.
+the bootstrap mounts automatically.
 
 Local-host bootstrap first waits for the management `flux-apps` Kustomization
 without printing transient `Unknown` status rows. After `flux-apps` becomes
@@ -215,7 +219,9 @@ aws s3api get-public-access-block  --bucket knr-ops-<account>-eu-north-1-workloa
 Bootstrap ends with a pivot: the CAPI inventory moves from the local `mgmt`
 kind cluster into the self-managed management cluster, and the kind cluster
 is deleted. `mise run bootstrap` runs the pivot by default
-(`BOOTSTRAP_PIVOT=0` opts out); `mise run pivot` runs it standalone.
+(`BOOTSTRAP_PIVOT=0` opts out); `mise run pivot` runs it standalone. The
+Rust CLI runs the same flow with resume-safe reruns; see
+[the bootstrap CLI](./bootstrap-cli.md) for its interface and knobs.
 
 `clusterctl move` is re-runnable: an object is deleted from the source kind
 cluster only after it was created on the target, so kind stays authoritative
@@ -249,7 +255,7 @@ mise run teardown    # or: ./teardown.sh
 
 Tears down in reverse order: suspends Flux, deletes CAPI workload clusters (so
 CAPA or CAPD deprovisions their infrastructure), removes providers, uninstalls
-Flux, and deletes the kind cluster. The local-host profile waits for CAPD to
+Flux, and deletes the kind cluster. The local-host environment waits for CAPD to
 remove the workload containers before deleting `mgmt`. The `clusterawsadm` IAM
 stack is intentionally left in place.
 
