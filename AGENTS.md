@@ -18,7 +18,8 @@ resources. There is no app source code here, only declarative infrastructure.
   - `addons/flux-apps/`: installs Flux on each workload cluster
     (HelmChartProxy + ClusterResourceSets).
   - `clusters/`: EKS cluster definitions per region (`eu-north-1`,
-    `eu-west-1`).
+    `eu-west-1`); `eu-north-1` also defines the self-managed management
+    cluster (`clusters/management/`).
 - `mgmt/local-host/`: the local-host management variant (kind-based).
   Same layout as `mgmt/aws/` (`clusters/docker`, `capi-providers/`,
   `addons/`, `infrastructure/`) with no cloud dependencies.
@@ -40,8 +41,17 @@ resources. There is no app source code here, only declarative infrastructure.
   attempted). Both deploy evidence artifacts are uploaded. Running both is
   a temporary comparison of validation accuracy and performance; the less
   effective job will be removed after enough runs are evaluated.
-- `bootstrap.sh` / `teardown.sh`: the only imperative steps (one-time
-  kind + Flux bootstrap, full teardown).
+- `bootstrap-rs/`: `knr-bootstrap`, the Rust CLI that ports the imperative
+  lifecycle (bootstrap + pivot; teardown under issue #100). Behavioral port:
+  same step order, messages, and env interface as the scripts, plus
+  rerun-safe-by-default semantics. Chart versions it installs imperatively
+  are Renovate-annotated constants in `src/main.rs`. CI (bootstrap-rs
+  workflow) runs fmt/clippy/build/test; the toolchain is pinned in
+  `rust-toolchain.toml`.
+- `bootstrap.sh` / `pivot.sh` / `teardown.sh`: the shell equivalents of the
+  CLI's phases. Kept until the binary completes full parity runs per
+  environment, then retired (issues #92/#95/#100). `mise run bootstrap` and
+  `mise run pivot` still invoke the scripts.
 - `docs/`: detailed documentation (see the table in README.md).
 - `mise.toml`: pinned tool versions and all task entrypoints.
   `mise.aws.toml` is the AWS tool layer (aws-cli, clusterawsadm),
@@ -50,6 +60,7 @@ resources. There is no app source code here, only declarative infrastructure.
   files that consume them (mise configs, manifests, workflows, airgap
   inventory); Renovate discovers and updates them weekly and tracks pending
   updates in the dependency dashboard issue. See `docs/dependencies.md`.
+  Edit it only with the dry-run workflow in "Editing renovate.json5" below.
 
 ## The golden rules (read before changing anything)
 
@@ -98,16 +109,62 @@ Each component pairs a plain kustomize root with a Flux `Kustomization`:
 ```sh
 mise install            # install pinned tools (kubectl, kind, flux, sops, age, ...)
 mise run validate       # build every kustomize overlay; mirrors CI
-mise run bootstrap      # one-time kind cluster + Flux handoff
+mise run bootstrap      # one-time kind cluster + Flux handoff + pivot to self-managed mgmt
 mise -E aws run kubeconfigs  # export AWS workload-cluster kubeconfigs
 mise run teardown       # full teardown (EKS, AWS resources, kind)
 ```
+
+## Editing renovate.json5
+
+Renovate configs fail silently in ways `renovate-config-validator` cannot
+see (it is a syntax gate only). Before pushing any change to
+`renovate.json5`, prove extraction with a local dry-run:
+
+```sh
+GITHUB_COM_TOKEN=$(gh auth token) RENOVATE_TOKEN=$(gh auth token) \
+  LOG_LEVEL=debug npx --yes -p renovate@44.50.1 \
+  renovate --platform=local --dry-run=full > /tmp/rv.log 2>&1
+```
+
+Pin the CLI version (unversioned npx resolves "latest" inconsistently) and
+run it on Node >= 24.11 (renovate's `engines` field; the CI renovate job
+pins node 24). On older Node the dry-run logs an `unhandledRejection`
+(`RegExp.escape is not a function`) and still exits 0: a green-looking
+silent no-op.
+Without `GITHUB_COM_TOKEN` every GitHub datasource lookup skips, hiding
+dead depNames. Read the "Dependency extraction complete" stats and compare
+`fileCount`/`depCount` per manager against what the change claims to
+cover; grep for "Failed to look up" and the `skipReason` histogram.
+
+Traps that have bitten this repo (each caught in a live review):
+
+- `matchStrings` compile with only the `g` flag: `^`/`$` anchors silently
+  extract zero dependencies from multi-line files. Keep patterns
+  unanchored with literal context, and never end a pattern by consuming
+  `\n` (skips every second line).
+- JSON5 eats single backslashes: `\s` inside a matchString class parses to
+  plain `s`, and `\\n` / `\\\"` in an `autoReplaceStringTemplate` are
+  emitted verbatim by the bare-handlebars replacement path, corrupting
+  the bumped file. Verify loaded patterns and simulate replacements
+  through handlebars; check file bytes with `repr()`, never the diff's
+  appearance.
+- Custom `depNameTemplate`s must resolve to live repos and datasources
+  (`gh api repos/<owner>/<repo>`); three 404 depNames have shipped.
+  `github-releases` returns nothing for tag-only repos (golang/go,
+  python/cpython); use `github-tags` or `golang-version`.
+
+Repo gates: `tests/test-renovate-coverage.py` (every managed pin is
+discovered) and the digest-pinning test run in CI only (the validate.yml
+`renovate-digest-pinning` job), not in `mise run validate`. They do not
+cover lookup liveness or the replacement path; only the
+dry-run and the handlebars simulation cover those.
 
 ## Where to look next
 
 Load these only when the task touches their domain:
 
 - `docs/architecture.md`: reconciliation order, how workload apps are delivered.
+- `docs/bootstrap-cli.md`: the `knr-bootstrap` Rust CLI: interface, env knobs, pivot, parity status.
 - `docs/extending.md`: adding a workload cluster, adding apps, adding other providers (Azure, Talos, k0smotron).
 - `docs/secrets.md`: SOPS + age setup, credential rotation.
 - `docs/konflate.md`: rendered PR review, CI gate, tokens, write-back.

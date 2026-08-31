@@ -1,8 +1,10 @@
 # Architecture
 
 GitOps-driven [Cluster API](https://cluster-api.sigs.k8s.io/) (CAPI) management
-platform. A local [kind](https://kind.sigs.k8s.io/) cluster bootstraps
-[Flux](https://fluxcd.io/), which then reconciles everything else from this
+platform. A disposable local [kind](https://kind.sigs.k8s.io/) cluster
+bootstraps [Flux](https://fluxcd.io/), provisions the self-managed management
+cluster through CAPI, and is deleted after a `clusterctl move` pivot: the
+management cluster then reconciles itself and everything else from this
 repository — AWS EKS workload clusters provisioned via
 [CAPA](https://cluster-api-aws.sigs.k8s.io/), per-cluster Flux instances
 delivered through CAPI addons, and application workloads (the
@@ -12,8 +14,8 @@ running on each workload cluster.
 
 ```mermaid
 flowchart TD
-    subgraph bootstrap["Bootstrap (one-time, bootstrap.sh)"]
-        KIND[kind cluster: mgmt]
+    subgraph bootstrap["Bootstrap (one-time, knr-bootstrap CLI)"]
+        KIND[kind cluster: mgmt, disposable]
         HELM[Helm: flux-operator + FluxInstance]
         SEC[Secrets: flux-github-pat + sops-age]
         KIND --> HELM
@@ -26,12 +28,13 @@ flowchart TD
 
     HELM -->|"sync: mgmt/aws/"| REPO
 
-    subgraph mgmt["Management cluster - Flux Kustomizations (dependsOn order)"]
+    subgraph mgmt["Management cluster (self-managed after the pivot) - Flux Kustomizations (dependsOn order)"]
         FS[flux-system root]
         CM[cert-manager]
         CO[capi-operator]
         CI[capa-identity]
         AMC[aws-managed-clusters]
+        MGMT[management cluster def<br/>self-hosted via the pivot]
         CAPIS[capi-system]
         CAPAS["capa-system (SOPS creds)"]
         CAAPH[caaph-system]
@@ -48,6 +51,7 @@ flowchart TD
         CO --> CAPIS --> CAPAS --> CAAPH --> FA
         CAPAS --> EUN
         CAPAS --> EUW
+        CAPAS --> MGMT
         FS --> ACKC --> ACKPI
         ACKC --> AWSIAM
         FS --> KONF
@@ -134,6 +138,12 @@ ack-controllers ▶ ack-pod-identity
 ack-controllers ▶ aws-iam
 konflate (no dependencies)
 ```
+
+The `eu-north-1` cluster definitions include the management cluster itself
+(`clusters/management/`): after the pivot, the management cluster's own Flux
+instance reconciles the Cluster objects that define it. The bootstrap kind
+cluster no longer exists at this point; nothing runs from an operator's
+laptop.
 
 ## PR review: konflate
 

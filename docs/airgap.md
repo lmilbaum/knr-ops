@@ -1,4 +1,4 @@
-# Air-gapped knr-ops with Zarf (local-host / CAPD profile)
+# Air-gapped knr-ops with Zarf (local-host / CAPD environment)
 
 This document describes how knr-ops is packaged with [Zarf](https://zarf.dev)
 on a connected machine and deployed end-to-end with **no internet access**:
@@ -72,7 +72,7 @@ CNI addon, the per-cluster Flux addon), reconciled from the config artifact.
 The `mgmt/` and `workload/` trees in git are **not** modified; the airgap
 variant is generated at build time by `build-config-artifact.sh`.
 
-**Why OCI, not Gitea.** The local-host profile moved from a GitHub
+**Why OCI, not Gitea.** The local-host environment moved from a GitHub
 `GitRepository` to an OCI-artifact sync (`oci://knr-registry:5000/knr-ops`)
 in PRs #30/#31/#33. There is no `GitRepository` left to rewrite, so the Zarf
 git-server is unused; the config crosses the gap as an OCI artifact inside the
