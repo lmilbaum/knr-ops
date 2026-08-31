@@ -101,9 +101,9 @@ mise run teardown           # full teardown (EKS, AWS resources, kind)
 ```
 
 Dependency versions are managed by Renovate
-([renovate.json5](renovate.json5)): they live in the native files that
-consume them and Renovate opens update PRs weekly; see
-[docs/dependencies.md](docs/dependencies.md).
+([renovate.json5](renovate.json5)) running as the hosted GitHub App: they
+live in the native files that consume them and Renovate opens update PRs
+weekly; see [docs/dependencies.md](docs/dependencies.md).
 
 ### Environments (formerly profiles)
 
