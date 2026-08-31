@@ -50,6 +50,7 @@ resources. There is no app source code here, only declarative infrastructure.
   files that consume them (mise configs, manifests, workflows, airgap
   inventory); Renovate discovers and updates them weekly and tracks pending
   updates in the dependency dashboard issue. See `docs/dependencies.md`.
+  Edit it only with the dry-run workflow in "Editing renovate.json5" below.
 
 ## The golden rules (read before changing anything)
 
@@ -102,6 +103,51 @@ mise run bootstrap      # one-time kind cluster + Flux handoff
 mise -E aws run kubeconfigs  # export AWS workload-cluster kubeconfigs
 mise run teardown       # full teardown (EKS, AWS resources, kind)
 ```
+
+## Editing renovate.json5
+
+Renovate configs fail silently in ways `renovate-config-validator` cannot
+see (it is a syntax gate only). Before pushing any change to
+`renovate.json5`, prove extraction with a local dry-run:
+
+```sh
+GITHUB_COM_TOKEN=$(gh auth token) RENOVATE_TOKEN=$(gh auth token) \
+  LOG_LEVEL=debug npx --yes -p renovate@44.50.1 \
+  renovate --platform=local --dry-run=full > /tmp/rv.log 2>&1
+```
+
+Pin the CLI version (unversioned npx resolves "latest" inconsistently) and
+run it on Node >= 24.11 (renovate's `engines` field; the CI renovate job
+pins node 24). On older Node the dry-run logs an `unhandledRejection`
+(`RegExp.escape is not a function`) and still exits 0: a green-looking
+silent no-op.
+Without `GITHUB_COM_TOKEN` every GitHub datasource lookup skips, hiding
+dead depNames. Read the "Dependency extraction complete" stats and compare
+`fileCount`/`depCount` per manager against what the change claims to
+cover; grep for "Failed to look up" and the `skipReason` histogram.
+
+Traps that have bitten this repo (each caught in a live review):
+
+- `matchStrings` compile with only the `g` flag: `^`/`$` anchors silently
+  extract zero dependencies from multi-line files. Keep patterns
+  unanchored with literal context, and never end a pattern by consuming
+  `\n` (skips every second line).
+- JSON5 eats single backslashes: `\s` inside a matchString class parses to
+  plain `s`, and `\\n` / `\\\"` in an `autoReplaceStringTemplate` are
+  emitted verbatim by the bare-handlebars replacement path, corrupting
+  the bumped file. Verify loaded patterns and simulate replacements
+  through handlebars; check file bytes with `repr()`, never the diff's
+  appearance.
+- Custom `depNameTemplate`s must resolve to live repos and datasources
+  (`gh api repos/<owner>/<repo>`); three 404 depNames have shipped.
+  `github-releases` returns nothing for tag-only repos (golang/go,
+  python/cpython); use `github-tags` or `golang-version`.
+
+Repo gates: `tests/test-renovate-coverage.py` (every managed pin is
+discovered) and the digest-pinning test run in CI only (the validate.yml
+`renovate-digest-pinning` job), not in `mise run validate`. They do not
+cover lookup liveness or the replacement path; only the
+dry-run and the handlebars simulation cover those.
 
 ## Where to look next
 

@@ -23,7 +23,7 @@ AIRGAP_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 ARCHIVES="$AIRGAP_DIR/archives"
 
 CLUSTER_NAME="${CLUSTER_NAME:-mgmt}"
-KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.36.1}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.37.0}"
 DOCKER_SOCKET_PATH="${DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
 
 if [ ! -S "$DOCKER_SOCKET_PATH" ]; then
