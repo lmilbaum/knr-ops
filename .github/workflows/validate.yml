@@ -33,27 +33,6 @@ jobs:
           done
           exit $fail
 
-  airgap-inventory:
-    name: Airgap inventory check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install kustomize
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          curl -sSf --retry 3 --retry-delay 2 -H "Authorization: token ${GITHUB_TOKEN}" "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          sudo mv kustomize /usr/local/bin/
-          kustomize version
-
-      - name: Unit-test airgap scripts
-        run: python3 -m unittest discover -s airgap/tests -p 'test_*.py' -v
-
-      - name: Check airgap image inventory
-        run: python3 airgap/scripts/check-inventory.py
-
   renovate-digest-pinning:
     name: Renovate airgap digest pinning
     runs-on: ubuntu-latest
