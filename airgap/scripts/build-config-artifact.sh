@@ -54,6 +54,9 @@ spec:
   repoURL: oci://knr-registry:5000/charts
   chartName: flux-operator
   version: "0.58.0"
+  # Pinned release name, matching mgmt/*/addons/flux-apps/flux-operator.yaml:
+  # keeps the release stable across proxy generations and cluster recreations.
+  releaseName: flux-operator
   namespace: flux-system
   options:
     waitForJobs: true
