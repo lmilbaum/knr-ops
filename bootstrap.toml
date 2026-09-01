@@ -39,6 +39,28 @@ cert-manager = "1.21.1"
 # renovate: datasource=helm registryUrl=https://kubernetes-sigs.github.io/cluster-api-operator depName=cluster-api-operator
 capi-operator = "0.28.0"
 
+[teardown]
+# Constants for `knr-bootstrap teardown` (issue #100), mirroring the literal
+# lists in teardown.sh; tests/test-bootstrap-config.py cross-checks them
+# against the Git manifests that define the same names.
+# CloudFormation stack created by `clusterawsadm bootstrap iam`.
+cfn-stack-name = "cluster-api-provider-aws-sigs-k8s-io"
+# Region-independent IAM roles: the ACK controller pod-identity roles
+# (mgmt/aws/infrastructure/ack-pod-identity/) and the per-cluster reader
+# roles created by the workload ACK IAM controllers.
+global-iam-roles = [
+  "knr-ops-ack-s3-controller",
+  "knr-ops-ack-rds-controller",
+  "knr-ops-ack-iam-controller",
+  "knr-ops-eu-north-1-workload-reader",
+  "knr-ops-eu-west-1-workload-reader",
+]
+# The console reader user created by the management cluster's ACK IAM
+# controller (mgmt/aws/infrastructure/aws-global-iam/reader-user.yaml).
+global-iam-users = ["knr-ops-reader"]
+# S3 bucket pattern (workload/base/s3-buckets/bucket.yaml).
+s3-bucket-pattern = "knr-ops-{account_id}-{cluster_name}-data"
+
 [environments.local-host]
 kind = "local-host"
 sync-path = "mgmt/local-host"
@@ -54,6 +76,15 @@ provider-manifests = [
   "mgmt/local-host/capi-providers/caaph-system/namespace.yaml",
   "mgmt/local-host/capi-providers/caaph-system/provider.yaml",
 ]
+
+[environments.local-host.teardown]
+# CAPD workload clusters deleted before the management cluster; their
+# Kustomization is suspended first so Flux does not recreate them.
+capi-workloads = ["local-workload"]
+# The self-managed management cluster is removed at the container level
+# (a cluster cannot delete its own Cluster object cleanly): its node/lb
+# containers share this prefix.
+mgmt-container-prefix = "local-management"
 
 [environments.aws]
 kind = "aws"
@@ -77,3 +108,24 @@ provider-manifests = [
 resource = "awsclustercontrolleridentities.infrastructure.cluster.x-k8s.io"
 name = "default"
 manifest = "mgmt/aws/infrastructure/aws-identity/identity.yaml"
+
+[environments.aws.teardown]
+# The self-managed management cluster (post-pivot) is removed through the
+# AWS orphan sweep, never via its own Cluster object: deleting it from
+# itself kills the CAPA controller mid-delete. Its names join the sweep.
+mgmt-eks-cluster-name = "default_eu-north-1-management-control-plane"
+mgmt-iam-role-prefix = "eu-north-1-management"
+# Workload clusters the orphan sweep visits (order: file order = sweep
+# order). Names mirror the Kustomization namePrefixes and the cluster-vars
+# substitutions in mgmt/aws/addons/flux-apps/flux-instance.yaml.
+[[environments.aws.teardown.aws-workloads]]
+region = "eu-north-1"
+cluster-name = "eu-north-1-workload"
+eks-cluster-name = "default_eu-north-1-workload-control-plane"
+rds-instance = "knr-ops-eu-north-1-workload-db"
+
+[[environments.aws.teardown.aws-workloads]]
+region = "eu-west-1"
+cluster-name = "eu-west-1-workload"
+eks-cluster-name = "default_eu-west-1-workload-control-plane"
+rds-instance = "knr-ops-eu-west-1-workload-db"

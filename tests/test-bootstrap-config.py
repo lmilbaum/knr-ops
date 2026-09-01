@@ -86,6 +86,72 @@ def main() -> int:
                     f"{fallback.get('manifest')}"
                 )
 
+        # ── teardown constants (issue #100) ─────────────────────────────
+        td = env.get("teardown", {})
+        for workload in td.get("aws-workloads", []):
+            region = workload.get("region", "")
+            prefix_dir = REPO_ROOT / "mgmt/aws/clusters" / region
+            if not prefix_dir.is_dir():
+                failures.append(f"environments.{name} teardown region {region!r} has no cluster directory")
+            # The K8s cluster name must equal the Kustomization namePrefix
+            # + 'workload' (the staged cluster.yaml names Cluster 'workload').
+            kustomization = prefix_dir / "staging/kustomization.yaml"
+            if kustomization.is_file():
+                text = kustomization.read_text()
+                expected_prefix = f"namePrefix: {region}-"
+                if expected_prefix not in text:
+                    failures.append(
+                        f"environments.{name} teardown: {kustomization.relative_to(REPO_ROOT)} "
+                        f"lacks '{expected_prefix}'"
+                    )
+            cluster_name = workload.get("cluster-name", "")
+            if cluster_name and not cluster_name.startswith(region):
+                failures.append(
+                    f"environments.{name} teardown cluster-name {cluster_name!r} "
+                    f"does not start with its region {region!r}"
+                )
+            # The RDS instance id is knr-ops-<cluster>-db (workload/base/
+            # rds-instances/dbinstance.yaml substitutes CLUSTER_NAME).
+            rds = workload.get("rds-instance", "")
+            if cluster_name and rds != f"knr-ops-{cluster_name}-db":
+                failures.append(
+                    f"environments.{name} teardown rds-instance {rds!r} != "
+                    f"knr-ops-{cluster_name}-db"
+                )
+            # The EKS name is '<namespace>_<kcp-name>' — only the namespace
+            # separator becomes an underscore (teardown.sh documents this
+            # against the live account; the KCP name keeps its dashes).
+            eks = workload.get("eks-cluster-name", "")
+            expected_eks = f"default_{cluster_name}-control-plane"
+            if cluster_name and eks != expected_eks:
+                failures.append(
+                    f"environments.{name} teardown eks-cluster-name {eks!r} != "
+                    f"{expected_eks}"
+                )
+
+    # Global teardown constants pin to the manifests that define them.
+    teardown = config.get("teardown", {})
+    if teardown:
+        expected_roles = [
+            "knr-ops-ack-s3-controller",
+            "knr-ops-ack-rds-controller",
+            "knr-ops-ack-iam-controller",
+        ]
+        roles = teardown.get("global-iam-roles", [])
+        for role in expected_roles:
+            if role not in roles:
+                failures.append(f"teardown.global-iam-roles missing {role}")
+        reader_user = REPO_ROOT / "mgmt/aws/infrastructure/aws-global-iam/reader-user.yaml"
+        users = teardown.get("global-iam-users", [])
+        if reader_user.is_file() and "knr-ops-reader" not in users:
+            failures.append("teardown.global-iam-users missing knr-ops-reader")
+        pattern = teardown.get("s3-bucket-pattern", "")
+        if pattern and "{account_id}" not in pattern or "{cluster_name}" not in pattern:
+            failures.append(
+                f"teardown.s3-bucket-pattern {pattern!r} must contain "
+                "{account_id} and {cluster_name}"
+            )
+
     if failures:
         print("bootstrap.toml cross-check FAILED:")
         for failure in failures:

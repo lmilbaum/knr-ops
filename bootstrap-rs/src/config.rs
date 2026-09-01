@@ -18,6 +18,11 @@ use serde::Deserialize;
 pub struct BootstrapConfig {
     pub bootstrap: BootstrapSection,
     pub charts: IndexMap<String, String>,
+    /// Teardown constants (issue #100): AWS orphan-sweep names and the
+    /// post-pivot controller-host removal rules. Optional so minimal test
+    /// fixtures and non-knr-ops consumers keep parsing.
+    #[serde(default)]
+    pub teardown: TeardownSection,
     /// Environments keyed by section name, in file order (error messages
     /// list environments in file order, e.g. 'local-host' before 'aws').
     pub environments: IndexMap<String, Environment>,
@@ -52,6 +57,9 @@ pub struct Environment {
     pub provider_manifests: Vec<String>,
     #[serde(default)]
     pub move_fallbacks: Vec<MoveFallback>,
+    /// Teardown constants for this environment (issue #100).
+    #[serde(default)]
+    pub teardown: TeardownEnv,
 }
 
 /// One `[[environments.<name>.move-fallbacks]]` entry.
@@ -61,6 +69,69 @@ pub struct MoveFallback {
     pub resource: String,
     pub name: String,
     pub manifest: String,
+}
+
+/// Global `[teardown]` constants (issue #100). These mirror the literal
+/// lists in `teardown.sh`; the Python cross-check pins them to the Git
+/// manifests that define the same names.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TeardownSection {
+    /// CloudFormation stack created by `clusterawsadm bootstrap iam`.
+    #[serde(default)]
+    pub cfn_stack_name: Option<String>,
+    /// Region-independent IAM roles: the ACK controller pod-identity roles
+    /// and the per-cluster reader roles (workload/base/iam-roles/role.yaml).
+    #[serde(default)]
+    pub global_iam_roles: Vec<String>,
+    /// Region-independent IAM users (the console reader user).
+    #[serde(default)]
+    pub global_iam_users: Vec<String>,
+    /// S3 bucket name pattern with `{account_id}` and `{cluster_name}`
+    /// placeholders (workload/base/s3-buckets/bucket.yaml).
+    #[serde(default)]
+    pub s3_bucket_pattern: Option<String>,
+}
+
+/// One `[[environments.<name>.teardown.aws-workloads]]` entry: the AWS
+/// resources a workload cluster owns, derivable from its name.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct AwsWorkload {
+    /// AWS region the cluster's resources live in.
+    pub region: String,
+    /// K8s Cluster name (e.g. `eu-north-1-workload`).
+    pub cluster_name: String,
+    /// EKS cluster name: CAPA creates it with dashes converted to
+    /// underscores (e.g. `default_eu-north-1-workload-control-plane`).
+    pub eks_cluster_name: String,
+    /// RDS instance identifier (e.g. `knr-ops-eu-north-1-workload-db`).
+    pub rds_instance: String,
+}
+
+/// Per-environment teardown constants (issue #100).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TeardownEnv {
+    /// AWS workload clusters this environment manages (aws only). The
+    /// orphan sweep visits every entry; empty for local-host.
+    #[serde(default)]
+    pub aws_workloads: Vec<AwsWorkload>,
+    /// CAPD/CAPI workload clusters to delete before the management
+    /// cluster (local-host only; e.g. `local-workload`).
+    #[serde(default)]
+    pub capi_workloads: Vec<String>,
+    /// Remove the self-managed management cluster at the container level
+    /// after the workload clusters are gone (local-host only): the mgmt
+    /// node/lb containers share this name prefix.
+    #[serde(default)]
+    pub mgmt_container_prefix: Option<String>,
+    /// Include the management cluster's own AWS names in the orphan sweep
+    /// (aws only): its EKS cluster name and IAM role prefix.
+    #[serde(default)]
+    pub mgmt_eks_cluster_name: Option<String>,
+    #[serde(default)]
+    pub mgmt_iam_role_prefix: Option<String>,
 }
 
 impl BootstrapConfig {
