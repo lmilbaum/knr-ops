@@ -165,7 +165,9 @@ impl HostGuard {
 // ── Step helpers ──────────────────────────────────────────────────────────────
 
 /// Step 1: suspend Flux Kustomizations on the controller host so nothing
-/// recreates deleted resources mid-teardown.
+/// recreates deleted resources mid-teardown. Patch failures are warned
+/// (the script's "Could not suspend some Kustomizations – continuing
+/// anyway"), not fatal.
 pub async fn suspend_flux(kubeconfig: Option<&str>) -> Result<()> {
     println!(">>> Suspending Flux Kustomizations to prevent re-reconciliation...");
     let names = capture_lossy(
@@ -187,8 +189,9 @@ pub async fn suspend_flux(kubeconfig: Option<&str>) -> Result<()> {
         println!("!   No Flux Kustomizations found – skipping suspension");
         return Ok(());
     }
+    let mut failed = 0;
     for ks in names.lines().filter_map(|l| l.trim().rsplit('/').next()) {
-        let _ = run(
+        if run(
             "kubectl",
             &kubectl_cmd(
                 kubeconfig,
@@ -204,7 +207,14 @@ pub async fn suspend_flux(kubeconfig: Option<&str>) -> Result<()> {
                 ],
             ),
         )
-        .await;
+        .await
+        .is_err()
+        {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        eprintln!("!   Could not suspend some Kustomizations – continuing anyway");
     }
     println!("✓   Flux Kustomizations suspended");
     Ok(())
@@ -307,7 +317,8 @@ pub async fn delete_aws_workload_clusters(
     }
     println!(">>> Waiting up to {timeout_secs}s for the workload clusters to be deleted...");
     println!(">>> (This typically takes 15–25 minutes while CAPA tears down AWS resources)");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_secs(timeout_secs);
     loop {
         let remaining: Vec<String> = capture_lossy(
             "kubectl",
@@ -323,12 +334,24 @@ pub async fn delete_aws_workload_clusters(
             println!("✓   All CAPI workload clusters deleted");
             return Ok(true);
         }
+        let elapsed = start.elapsed().as_secs();
         if std::time::Instant::now() >= deadline {
-            eprintln!("!   Timed out waiting for CAPI clusters to be deleted");
+            eprintln!("!   Timed out waiting for CAPI clusters to be deleted after {elapsed}s");
             eprintln!("!   The following clusters still exist: {remaining:?}");
+            eprintln!(
+                "!   ABORTING teardown. The management cluster and CAPA controller have been"
+            );
+            eprintln!("!   left intact so AWS resources can continue to deprovision. Re-run this");
+            eprintln!("!   once 'kubectl get clusters -A' is empty (or FORCE_KIND_DELETE=1 to");
+            eprintln!(
+                "!   force-delete the management cluster and accept orphaned AWS resources)."
+            );
             return Ok(false);
         }
-        println!(">>>   {} cluster(s) still deleting...", remaining.len());
+        println!(
+            ">>>   {} cluster(s) still deleting... ({elapsed}s elapsed, checking again in 30s)",
+            remaining.len()
+        );
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
 }
@@ -351,6 +374,29 @@ pub fn s3_bucket_name(pattern: &str, account_id: &str, cluster_name: &str) -> St
 
 fn warn(msg: &str) {
     eprintln!("!   {msg}");
+}
+
+/// `command -v` equivalent: true when the binary cannot be found or is
+/// not executable on PATH (the script's preflight probe).
+async fn which_failure(cmd: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(path) = std::env::var_os("PATH") else {
+            return true;
+        };
+        !std::env::split_paths(&path).any(|dir| {
+            let candidate = dir.join(cmd);
+            candidate
+                .metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        !run_quiet(cmd, &["--version"]).await
+    }
 }
 
 /// One AWS workload (or the management cluster itself) expressed as the
@@ -1346,15 +1392,34 @@ pub async fn delete_capi_providers(kubeconfig: Option<&str>, timeout_secs: u64) 
     let mut deleted_any = false;
     for kind in kinds {
         let full = format!("{kind}.operator.cluster.x-k8s.io");
+        // The script's jsonpath: `ns/name` per line (-o name never
+        // includes the namespace for cluster-scoped listings).
         let listing = capture_lossy(
             "kubectl",
-            &kubectl_cmd(kubeconfig, &["get", &full, "-A", "-o", "name"]),
+            &kubectl_cmd(
+                kubeconfig,
+                &[
+                    "get",
+                    &full,
+                    "-A",
+                    "-o",
+                    "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}",
+                ],
+            ),
         )
         .await;
-        for object in listing.lines().filter_map(|l| l.trim().rsplit('/').next()) {
-            // name may be namespaced "ns/name" already via -o name
-            let ns = object.rsplit('/').nth(1).unwrap_or("default");
-            let name = object.rsplit('/').next().unwrap_or(object);
+        for object in listing.lines().filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l)
+            }
+        }) {
+            let (ns, name) = match object.split_once('/') {
+                Some((ns, name)) => (ns, name),
+                None => ("default", object),
+            };
             println!(">>>   Deleting {kind}: {name} (namespace: {ns})");
             let _ = run(
                 "kubectl",
@@ -1528,14 +1593,40 @@ pub async fn run_teardown(cfg: &Config, tcfg: &TeardownConfig) -> Result<()> {
     std::env::set_var("AWS_PAGER", "");
 
     // ── Preflight: tools and mode rules ───────────────────────────────
+    // The script's tool preflight, restored: hard-fail on a missing tool
+    // BEFORE any mutation. A PATH problem must never downgrade the aws
+    // path into a blind AWS-only sweep against a live world.
     let aws_available = run_quiet("aws", &["--version"]).await;
     if tcfg.aws_only {
         if !aws_available {
             bail!("aws CLI not found in PATH (required for AWS_ONLY mode)");
         }
         println!(">>> AWS_ONLY mode – k8s tools not required");
-    } else if !aws_available {
-        eprintln!("!   aws CLI not found – AWS orphan cleanup (step 4) will be skipped");
+    } else if cfg.is_local() {
+        for cmd in ["kind", "kubectl"] {
+            if !run_quiet(cmd, &["--version"]).await && cmd != "kind" {
+                bail!("{cmd} not found in PATH");
+            }
+            // kind has no --version that succeeds without docker; probe
+            // the binary itself (the script uses command -v).
+            if cmd == "kind" && which_failure(cmd).await {
+                bail!("{cmd} not found in PATH");
+            }
+        }
+        if !aws_available {
+            eprintln!("!   aws CLI not found – AWS orphan cleanup (step 4) will be skipped");
+        }
+    } else {
+        for cmd in ["kind", "helm", "kubectl", "xargs"] {
+            if which_failure(cmd).await {
+                bail!("{cmd} not found in PATH");
+            }
+        }
+        if aws_available {
+            println!(">>> aws CLI available");
+        } else {
+            eprintln!("!   aws CLI not found – AWS orphan cleanup (step 4) will be skipped");
+        }
     }
 
     // local-host path.
@@ -1661,6 +1752,12 @@ pub async fn run_teardown(cfg: &Config, tcfg: &TeardownConfig) -> Result<()> {
                 tcfg.cluster_delete_timeout,
             )
             .await?;
+            if !clusters_gone {
+                // The script aborts here (exit 1): the remaining steps
+                // must not run while CAPA is mid-deprovision, and the
+                // run must report failure to automation.
+                bail!("teardown aborted: CAPI workload clusters did not finish deleting; the management cluster and CAPA controller were left intact so AWS resources can continue deprovisioning");
+            }
         } else {
             println!(">>> No reachable management cluster – skipping k8s steps");
         }
