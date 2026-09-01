@@ -85,7 +85,10 @@ jobs:
 
       - name: Smoke the image (binary + tools on PATH)
         run: |
-          docker run --rm --entrypoint sh knr-ops-toolbox:ci -c '
+          # /workspace has no bootstrap.toml in CI (the repo is mounted
+          # there at runtime); --help must be probed from the checkout.
+          docker run --rm --entrypoint sh -v "$PWD:/workspace:ro" \
+            -w /workspace knr-ops-toolbox:ci -c '
             for t in kind kubectl helm clusterctl flux sops age aws docker xargs git curl; do
               command -v "$t" >/dev/null || { echo "::error::$t missing on PATH"; exit 1; }
             done
