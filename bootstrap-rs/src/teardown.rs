@@ -1378,6 +1378,14 @@ async fn run_with_stdin_str(cmd: &str, args: &[&str], input: &str) -> bool {
 
 // ── Orchestrator: the nine steps in the script's order ───────────────────────
 
+/// kubectl jsonpath printing `ns/name` per line. Byte-exact matters:
+/// kubectl rejects an over-escaped form with "unrecognized character in
+/// action: U+005C" and capture_lossy would turn that into an empty
+/// listing. The unit test pins the exact argv bytes; the live form was
+/// verified against a kind cluster (prints ns/name per line).
+const NS_NAME_JSONPATH: &str =
+    "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}";
+
 /// Step 5: delete CAPI provider CRs (the operator uninstalls the
 /// controllers), then wait up to the timeout.
 pub async fn delete_capi_providers(kubeconfig: Option<&str>, timeout_secs: u64) {
@@ -1396,16 +1404,7 @@ pub async fn delete_capi_providers(kubeconfig: Option<&str>, timeout_secs: u64) 
         // includes the namespace for cluster-scoped listings).
         let listing = capture_lossy(
             "kubectl",
-            &kubectl_cmd(
-                kubeconfig,
-                &[
-                    "get",
-                    &full,
-                    "-A",
-                    "-o",
-                    "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}",
-                ],
-            ),
+            &kubectl_cmd(kubeconfig, &["get", &full, "-A", "-o", NS_NAME_JSONPATH]),
         )
         .await;
         for object in listing.lines().filter_map(|l| {
@@ -2020,5 +2019,25 @@ mod tests {
             t.bucket_name("knr-ops-{account_id}-{cluster_name}-data", "acct"),
             "knr-ops-acct-eu-north-1-management-data"
         );
+    }
+}
+
+#[cfg(test)]
+mod jsonpath_tests {
+    use super::NS_NAME_JSONPATH;
+
+    #[test]
+    fn ns_name_jsonpath_bytes_match_the_live_verified_form() {
+        // Byte-exact argv: kubectl rejects the over-escaped form
+        // ('unrecognized character in action: U+005C'). Verified live
+        // against a kind cluster: this exact string prints ns/name per
+        // line; the over-escaped variant errors and capture_lossy
+        // silently returns an empty listing.
+        assert_eq!(
+            NS_NAME_JSONPATH,
+            "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}"
+        );
+        // The decoded bytes contain exactly one backslash (before n).
+        assert_eq!(NS_NAME_JSONPATH.matches('\\').count(), 1);
     }
 }
