@@ -3,7 +3,7 @@
 #
 # 1. docker-loads every image archive from airgap/archives/ into the host
 #    Docker daemon:
-#      - kindest/node v1.36.1 (mgmt kind node) and v1.35.0 (CAPD workload
+#      - kindest/node v1.37.0 (mgmt kind node and CAPD workload/management
 #        nodes) — kind and CAPD `docker run` these directly from the host
 #        daemon, outside kubelet, so the Zarf agent cannot rewrite them.
 #      - kindest/haproxy (CAPD load balancer) and registry:2 (knr-registry,

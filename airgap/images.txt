@@ -10,8 +10,10 @@
 #   [H] host Docker daemon image, consumed by kind + CAPD (NOT agent-rewriteable)
 #   [W] workload-node containerd store (separate from host daemon)
 #
-# NOTE: workload node image is kindest/node:v1.35.0, mgmt node is v1.36.1.
-#       Their embedded component versions differ (kindnetd, coredns, etcd, k8s).
+# NOTE: workload and management CAPD node images are kindest/node:v1.37.0;
+#       the kind bootstrap mgmt node still runs v1.36.1 pending recreation
+#       (KIND_NODE_IMAGE now defaults to v1.37.0). Their embedded component
+#       versions differ (kindnetd, coredns, etcd, k8s).
 
 # ── Management cluster pod images [M] ─────────────────────────────────────────
 ghcr.io/controlplaneio-fluxcd/flux-operator:v0.58.0
@@ -46,16 +48,17 @@ kindest/node:v1.37.0
 kindest/haproxy:v20230606-42a2262b
 docker.io/library/registry:2
 
-# ── Workload node containerd store [W] (v1.35.0 generation) ──────────────────
+# ── Workload node containerd store [W] (v1.37.0 generation) ──────────────────
 # Pulled by the workload node's OWN containerd; must be pre-seeded or reachable
 # from a registry the workload node can reach over the kind docker network.
-docker.io/kindest/kindnetd:v20251212-v0.29.0-alpha-105-g20ccfc88
-docker.io/kindest/local-path-provisioner:v20251212-v0.29.0-alpha-105-g20ccfc88
-docker.io/kindest/local-path-helper:v20251211-v0.29.0-alpha-100-g82a92c5d
-registry.k8s.io/coredns/coredns:v1.14.7
+docker.io/kindest/kindnetd:v20260820-69b56db7
+docker.io/kindest/kindnetd:v20260528-9350166c
+docker.io/kindest/local-path-provisioner:v20260820-69b56db7
+docker.io/kindest/local-path-helper:v20260131-7181c60a
+registry.k8s.io/coredns/coredns:v1.14.6
 registry.k8s.io/kube-apiserver:v1.37.0
 registry.k8s.io/kube-controller-manager:v1.37.0
-registry.k8s.io/kube-proxy:v1.35.0
+registry.k8s.io/kube-proxy:v1.37.0
 registry.k8s.io/etcd:3.7.1-0
 registry.k8s.io/kube-scheduler:v1.37.0
 registry.k8s.io/pause:3.10.2
