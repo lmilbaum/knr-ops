@@ -1595,20 +1595,18 @@ pub async fn run_teardown(cfg: &Config, tcfg: &TeardownConfig) -> Result<()> {
     // The script's tool preflight, restored: hard-fail on a missing tool
     // BEFORE any mutation. A PATH problem must never downgrade the aws
     // path into a blind AWS-only sweep against a live world.
-    let aws_available = run_quiet("aws", &["--version"]).await;
+    let aws_available = !which_failure("aws").await;
     if tcfg.aws_only {
         if !aws_available {
             bail!("aws CLI not found in PATH (required for AWS_ONLY mode)");
         }
         println!(">>> AWS_ONLY mode – k8s tools not required");
     } else if cfg.is_local() {
+        // The script probes existence (command -v) for both tools; probing
+        // execution instead breaks on kubectl, which rejects --version as
+        // an unknown flag and would fail preflight on every host.
         for cmd in ["kind", "kubectl"] {
-            if !run_quiet(cmd, &["--version"]).await && cmd != "kind" {
-                bail!("{cmd} not found in PATH");
-            }
-            // kind has no --version that succeeds without docker; probe
-            // the binary itself (the script uses command -v).
-            if cmd == "kind" && which_failure(cmd).await {
+            if which_failure(cmd).await {
                 bail!("{cmd} not found in PATH");
             }
         }
