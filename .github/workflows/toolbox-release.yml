@@ -1,0 +1,133 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: toolbox-release
+
+# Publishes ghcr.io/polarsquad/knr-ops-toolbox on semver tags (issue #104).
+# The tag must equal the version in bootstrap-rs/Cargo.toml; the gate job
+# fails the release when they disagree. Signing is cosign keyless via the
+# workflow's GitHub OIDC identity (same identity model as the air-gapped
+# workflow's keyless-signed Zarf packages); the SBOM is Syft, matching the
+# Zarf bundle's per-component SBOMs.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolbox-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Tag matches Cargo.toml version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Fail if tag and Cargo.toml disagree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' bootstrap-rs/Cargo.toml | head -1)
+          if [ "$tag" != "$cargo_version" ]; then
+            echo "::error::tag v${tag} does not match bootstrap-rs/Cargo.toml version ${cargo_version}"
+            exit 1
+          fi
+          echo "tag v${tag} matches Cargo.toml ${cargo_version}"
+
+  publish:
+    name: Build, push, sign, attest
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Docker login to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Docker metadata (X.Y.Z, X.Y, latest)
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/polarsquad/knr-ops-toolbox
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=latest
+
+      - name: Set up QEMU (linux/amd64 cross-build)
+        uses: docker/setup-qemu-action@v4.3.0
+        with:
+          platforms: amd64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.3.0
+
+      - name: Build and push multi-arch
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: bootstrap-rs/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0.24.2
+
+      - name: Sign the image (keyless, workflow identity)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign each tag's digest; verification is against the workflow
+          # identity (certificate issuer/subject per cosign docs):
+          #   cosign verify ghcr.io/polarsquad/knr-ops-toolbox:X.Y.Z \
+          #     --certificate-identity-regexp \
+          #       '^https://github.com/polarsquad/knr-ops/.github/workflows/toolbox-release.yml@refs/tags/vX.Y.Z$' \
+          #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          digest="${{ steps.build.outputs.digest }}"
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          for tag in "${tag_list[@]}"; do
+            ref="${tag}@${digest}"
+            echo "signing ${ref}"
+            cosign sign --yes "${ref}"
+          done
+
+      - name: Attach SBOM (Syft) to each tag
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          for tag in "${tag_list[@]}"; do
+            ref="${tag}@${digest}"
+            syft "${ref}" -o spdx-json > sbom.json
+            cosign attest --yes --predicate sbom.json --type spdxjson "${ref}"
+            echo "SBOM attested to ${ref}"
+          done
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: toolbox-sbom-spdx
+          path: sbom.json
+          retention-days: 30
