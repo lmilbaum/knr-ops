@@ -168,11 +168,11 @@ EOF
 # cluster-class.yaml: add preLoadImages to both DevMachineTemplates. Two
 # offline-only gaps found by Wi-Fi-off runs (connected runs mask them by
 # pulling silently):
-#   - registry.k8s.io/pause:3.10.1: the node bakes pause:3.10 but kubeadm
-#     v1.35.0 requires 3.10.1; the preflight pull fails offline and
-#     kubeadm init aborts (cluster never becomes Available).
+#   - registry.k8s.io/pause:3.10.1: leftover from the v1.35.0 generation,
+#     whose kubeadm required 3.10.1; v1.37.0 kubeadm pulls 3.10.2 (already
+#     in images.txt). Kept until the pause-pin follow-up removes it.
 #   - docker.io/kindest/kindnetd:v20260528-9350166c: the vendored CNI pins
-#     this tag but the v1.35.0 node bakes v20251212; the CNI pull hangs
+#     this tag but the v1.37.0 node bakes v20260820; the CNI pull hangs
 #     offline so nodes never become Ready.
 # The flux controllers + podinfo are pre-loaded so the per-cluster Flux needs
 # no internet. All entries load from the host Docker daemon
