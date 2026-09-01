@@ -18,6 +18,7 @@
 //! a generic bootstrap engine and knr-ops is its first consumer.
 
 mod config;
+mod teardown;
 
 use config::{BootstrapConfig, Environment};
 
@@ -96,6 +97,23 @@ struct Cli {
     /// since the cluster was created (the reuse path does not detect drift).
     #[arg(long)]
     recreate: bool,
+
+    /// Tear down everything the bootstrap created (issue #100): the port
+    /// of teardown.sh with post-pivot semantics. Knobs stay env-only
+    /// (AWS_ONLY, FORCE_KIND_DELETE, CLUSTER_DELETE_TIMEOUT,
+    /// PROVIDER_DELETE_TIMEOUT), matching the script's interface.
+    #[command(subcommand)]
+    command: Option<SubCommand>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SubCommand {
+    /// Destroy all infrastructure the bootstrap created, in reverse order.
+    Teardown {
+        /// Deployment profile (KNR_OPS_PROFILE takes precedence, as
+        /// everywhere else; default: bootstrap.default-environment).
+        profile: Option<String>,
+    },
 }
 
 /// Resolved run configuration: the environment knobs bootstrap.sh and
@@ -394,7 +412,7 @@ async fn run(cmd: &str, args: &[&str]) -> Result<()> {
 }
 
 /// Run a command silently; report only whether it succeeded.
-async fn run_quiet(cmd: &str, args: &[&str]) -> bool {
+pub(crate) async fn run_quiet(cmd: &str, args: &[&str]) -> bool {
     Command::new(cmd)
         .args(args)
         .stdin(Stdio::null())
@@ -407,7 +425,7 @@ async fn run_quiet(cmd: &str, args: &[&str]) -> bool {
 }
 
 /// Run a command and capture stdout (stderr inherited); error on nonzero exit.
-async fn capture(cmd: &str, args: &[&str]) -> Result<String> {
+pub(crate) async fn capture(cmd: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(cmd)
         .args(args)
         .stderr(Stdio::inherit())
@@ -421,7 +439,7 @@ async fn capture(cmd: &str, args: &[&str]) -> Result<String> {
 }
 
 /// Run a command and capture stdout, ignoring the exit status (like `cmd || true`).
-async fn capture_lossy(cmd: &str, args: &[&str]) -> String {
+pub(crate) async fn capture_lossy(cmd: &str, args: &[&str]) -> String {
     Command::new(cmd)
         .args(args)
         .stderr(Stdio::null())
@@ -434,7 +452,7 @@ async fn capture_lossy(cmd: &str, args: &[&str]) -> String {
 /// Run a command with `input` piped to stdin and stdio otherwise inherited.
 /// Error messages include argv only, never stdin content, so manifests
 /// containing secret material are safe to pass here.
-async fn run_with_stdin(cmd: &str, args: &[&str], input: &str) -> Result<()> {
+pub(crate) async fn run_with_stdin(cmd: &str, args: &[&str], input: &str) -> Result<()> {
     let mut child = Command::new(cmd)
         .args(args)
         .stdin(Stdio::piped())
@@ -455,7 +473,7 @@ async fn run_with_stdin(cmd: &str, args: &[&str], input: &str) -> Result<()> {
 
 /// kubectl args with an optional target kubeconfig (None = the current
 /// context, i.e. the kind cluster; Some = the pivot target).
-fn kubectl_cmd<'a>(kubeconfig: Option<&'a str>, args: &[&'a str]) -> Vec<&'a str> {
+pub(crate) fn kubectl_cmd<'a>(kubeconfig: Option<&'a str>, args: &[&'a str]) -> Vec<&'a str> {
     let mut full = Vec::with_capacity(args.len() + 2);
     if let Some(kc) = kubeconfig {
         full.push("--kubeconfig");
@@ -2063,6 +2081,52 @@ async fn main() -> Result<()> {
     // pins all come from it (BOOTSTRAP_CONFIG overrides the location).
     let repo = BootstrapConfig::locate_and_load()?;
     let cli = Cli::parse();
+
+    // The teardown subcommand has its own knob set; it does not run the
+    // bootstrap Config resolution (which validates bootstrap/pivot knobs).
+    if let Some(SubCommand::Teardown { profile }) = &cli.command {
+        let name = resolve_environment(
+            std::env::var("KNR_OPS_PROFILE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .as_deref(),
+            profile.as_deref(),
+            &repo,
+        )?;
+        let environment = repo
+            .environment(&name)
+            .with_context(|| "internal: environment vanished between resolution and lookup")?
+            .clone();
+        // A minimal Config carrying what teardown needs (profile,
+        // environment section, repository config).
+        let cfg = Config {
+            repo,
+            profile: name,
+            environment,
+            recreate: false,
+            registry_port: DEFAULT_REGISTRY_PORT,
+            registry_ready_retries: DEFAULT_REGISTRY_READY_RETRIES,
+            local_reconcile_timeout: DEFAULT_LOCAL_RECONCILE_TIMEOUT.to_string(),
+            container_engine: None,
+            git_repo_url: None,
+            github_token: None,
+            github_user: DEFAULT_GITHUB_USER.to_string(),
+            age_key_file: PathBuf::from(DEFAULT_AGE_KEY_FILE),
+            age_public_key: None,
+            oci_repository: DEFAULT_OCI_REPOSITORY.to_string(),
+            oci_tag: DEFAULT_OCI_TAG.to_string(),
+            bootstrap_pivot: true,
+            pivot_skip_delete: false,
+            mgmt_kubeconfig: teardown::TeardownConfig::from_env(|n| std::env::var(n).ok())?
+                .mgmt_kubeconfig,
+            mgmt_ready_timeout: String::new(),
+            mgmt_poll_interval: DEFAULT_MGMT_POLL_INTERVAL,
+            bootstrap_kubecontext: String::new(),
+        };
+        let tcfg = teardown::TeardownConfig::from_env(|n| std::env::var(n).ok())?;
+        return teardown::run_teardown(&cfg, &tcfg).await;
+    }
+
     let cfg = Config::load(&cli, repo)?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("knr-bootstrap/", env!("CARGO_PKG_VERSION")))
@@ -2211,6 +2275,10 @@ mod tests {
             ["knr-bootstrap", "aws", "--no-pivot"],
             ["knr-bootstrap", "aws", "--pivot"],
             ["knr-bootstrap", "--mgmt-kubeconfig", "/tmp/x.yaml"],
+            // Teardown knobs are env-only too (AWS_ONLY /
+            // FORCE_KIND_DELETE), matching teardown.sh's interface.
+            ["knr-bootstrap", "teardown", "--aws-only"],
+            ["knr-bootstrap", "teardown", "--force-kind-delete"],
         ] {
             assert!(
                 Cli::try_parse_from(rejected).is_err(),
