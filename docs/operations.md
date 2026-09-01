@@ -164,7 +164,7 @@ mise -E local-host run podinfo-port-forward
 
 Then browse to <http://localhost:9898>. Press Ctrl-C to stop forwarding.
 
-The workload uses Kubernetes v1.35.0. A CAPI ClusterResourceSet installs a
+The workload uses Kubernetes v1.37.0. A CAPI ClusterResourceSet installs a
 pinned Kindnet daemon as its CNI before the Flux addons are delivered.
 The management cluster needs access to the container-engine socket, which
 the bootstrap mounts automatically.

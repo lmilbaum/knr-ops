@@ -88,7 +88,7 @@ The verification linchpin is the agent's **image rewrite** plus a Ready
 | `archives/zarf-init-arm64-v0.83.0.tar.zst` | `zarf init` (registry + agent) |
 | `zarf-package-knr-ops-airgap-arm64-0.1.0.tar.zst` | signed package, including per-component Syft JSON/HTML SBOMs and the Sigstore signature bundle |
 | `archives/kindest_node_v1.36.1_mgmt.tar` | mgmt kind node (host daemon) |
-| `archives/kindest_node_v1.35.0.tar` | CAPD workload nodes (host daemon) |
+| `archives/kindest_node_v1.37.0.tar` | CAPD workload and management nodes (host daemon) |
 | `archives/kindest_haproxy_*.tar` | CAPD load balancer |
 | `archives/docker.io_library_registry_2.tar` | knr-registry container |
 | `archives/workload-pod-images.tar` | flux controllers + podinfo for `preLoadImages` |
