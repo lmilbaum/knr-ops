@@ -134,6 +134,8 @@ struct Config {
     registry_ready_retries: u32,
     local_reconcile_timeout: String,
     container_engine: Option<String>,
+    engine_sock: Option<String>,
+    toolbox: bool,
     git_repo_url: Option<String>,
     github_token: Option<String>,
     github_user: String,
@@ -154,6 +156,22 @@ impl Config {
     /// names are the binary's opinionated contract, kept as literals.
     fn is_local(&self) -> bool {
         self.profile == "local-host"
+    }
+
+    /// Address the local registry from the process running this binary.
+    /// Host runs use the published port; toolbox runs share the kind network.
+    fn registry_endpoint(&self) -> (String, u16) {
+        if self.toolbox {
+            (self.repo.bootstrap.registry_name.clone(), 5000)
+        } else {
+            ("localhost".to_string(), self.registry_port)
+        }
+    }
+
+    /// CAPD kubeconfigs already contain a kind-network endpoint. Host runs
+    /// rewrite it to a published localhost port; toolbox runs keep it intact.
+    fn should_rewrite_capd_endpoint(&self) -> bool {
+        self.is_local() && !self.toolbox
     }
 
     /// Resolve the run configuration from the process environment.
@@ -216,6 +234,8 @@ impl Config {
                 DEFAULT_LOCAL_RECONCILE_TIMEOUT,
             ),
             container_engine: value("CONTAINER_ENGINE"),
+            engine_sock: value("ENGINE_SOCK"),
+            toolbox: with_default("KNR_TOOLBOX", "0") == "1",
             git_repo_url: value("GIT_REPO_URL"),
             github_token: value("GITHUB_TOKEN"),
             github_user: with_default("GITHUB_USER", DEFAULT_GITHUB_USER),
@@ -298,6 +318,34 @@ fn extract_workload_port(port_output: &str) -> Option<String> {
         .and_then(|l| l.rsplit(':').next())
         .map(str::trim)
         .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+fn toolbox_kubeconfig_path(toolbox: bool, kubeconfig: Option<&str>) -> Result<Option<PathBuf>> {
+    if !toolbox {
+        return Ok(None);
+    }
+    let path = kubeconfig
+        .filter(|value| !value.is_empty())
+        .context("KUBECONFIG must name one writable file when KNR_TOOLBOX=1")?;
+    ensure!(
+        !path.contains(':'),
+        "KUBECONFIG must name a single file when KNR_TOOLBOX=1"
+    );
+    Ok(Some(PathBuf::from(path)))
+}
+
+fn internal_kind_kubeconfig_args(name: &str) -> [&str; 5] {
+    ["get", "kubeconfig", "--internal", "--name", name]
+}
+
+/// The `server:` endpoint recorded in a CAPD-exported kubeconfig.
+fn capd_recorded_endpoint(kubeconfig: &str) -> Option<String> {
+    kubeconfig
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("server: "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
 }
 
@@ -557,7 +605,7 @@ async fn preflight_checks(cfg: &Config, http: &reqwest::Client) -> Result<Prefli
         }
     };
 
-    let engine_sock = match engine.as_str() {
+    let detected_engine_sock = match engine.as_str() {
         "docker" => {
             if !run_quiet("docker", &["info"]).await {
                 bail!("Docker daemon not running");
@@ -587,6 +635,10 @@ async fn preflight_checks(cfg: &Config, http: &reqwest::Client) -> Result<Prefli
         }
         other => bail!("Unsupported CONTAINER_ENGINE '{other}' (expected 'docker' or 'podman')"),
     };
+    // A containerized client can mount the API socket at /var/run/docker.sock
+    // while sibling containers need the daemon-side source path. The launcher
+    // supplies that source as ENGINE_SOCK, especially for remote Podman.
+    let engine_sock = cfg.engine_sock.clone().unwrap_or(detected_engine_sock);
 
     Ok(Preflight {
         engine,
@@ -673,6 +725,65 @@ async fn preflight_aws(cfg: &Config, http: &reqwest::Client) -> Result<AwsContex
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
+pub(crate) async fn select_toolbox_kind_kubeconfig(cfg: &Config) -> Result<()> {
+    let kubeconfig = std::env::var("KUBECONFIG").ok();
+    let Some(path) = toolbox_kubeconfig_path(cfg.toolbox, kubeconfig.as_deref())? else {
+        return Ok(());
+    };
+    let args = internal_kind_kubeconfig_args(&cfg.repo.bootstrap.kind_cluster);
+    let contents = capture("kind", &args).await?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&path, contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to chmod 600 {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The toolbox container's own ID (Docker/Podman write it to /etc/hostname).
+fn toolbox_container_id() -> Option<String> {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Attach the toolbox container to the kind network so kind-network
+/// endpoints (the internal API server, knr-registry:5000) resolve.
+/// Idempotent: an already-attached container is success.
+pub(crate) async fn toolbox_join_kind_network(cfg: &Config, engine: &str) -> Result<()> {
+    if !cfg.toolbox {
+        return Ok(());
+    }
+    let Some(id) = toolbox_container_id() else {
+        bail!("KNR_TOOLBOX=1 but /etc/hostname is unreadable; cannot join the kind network");
+    };
+    match capture(engine, &["network", "connect", "kind", &id]).await {
+        Ok(_) => Ok(()),
+        // docker: "already exists in network"; podman: "is already connected"
+        Err(e) if e.to_string().contains("already") => Ok(()),
+        Err(e) => Err(e).context("attaching the toolbox to the kind network failed"),
+    }
+}
+
+/// Best-effort detach before `kind delete cluster`: kind removes the network
+/// after the last node, and an attached toolbox would keep it alive.
+pub(crate) async fn toolbox_leave_kind_network(cfg: &Config, engine: &str) {
+    if !cfg.toolbox {
+        return;
+    }
+    if let Some(id) = toolbox_container_id() {
+        let _ = run(engine, &["network", "disconnect", "kind", &id]).await;
+    }
+}
+
 /// Ensure the kind 'mgmt' cluster exists and is healthy.
 ///
 /// Default: reuse an existing cluster after validating that its context is
@@ -685,12 +796,20 @@ async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
     let clusters = capture_lossy("kind", &["get", "clusters"]).await;
     let exists = clusters.lines().any(|l| l.trim() == kind_cluster);
     let node_ready_timeout = format!("--timeout={NODE_READY_TIMEOUT}");
+    let engine = detect_engine_for_network(cfg).await;
 
     if exists && !cfg.recreate {
         println!(
             ">>> Reusing existing kind cluster '{kind_cluster}' (pass --recreate to replace it)..."
         );
         println!(">>> Validating existing cluster health...");
+        if let Some(engine) = engine.as_deref() {
+            // Idempotent (already-attached is success) and must precede the
+            // kubeconfig selection: the internal endpoint only resolves
+            // once the toolbox is on the kind network.
+            toolbox_join_kind_network(cfg, engine).await?;
+            select_toolbox_kind_kubeconfig(cfg).await?;
+        }
         if !run_quiet("kubectl", &["config", "use-context", kind_context]).await {
             // kind get clusters can report mgmt while the kubeconfig lacks
             // the context (interrupted first create, pruned kubeconfig).
@@ -725,6 +844,9 @@ async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
 
     if exists {
         println!(">>> Cluster '{kind_cluster}' exists and --recreate was given – recreating...");
+        if let Some(engine) = engine.as_deref() {
+            toolbox_leave_kind_network(cfg, engine).await;
+        }
         run("kind", &["delete", "cluster", "--name", kind_cluster]).await?;
     }
 
@@ -744,6 +866,10 @@ async fn ensure_kind_cluster(cfg: &Config, engine_sock: &str) -> Result<()> {
         &kind_config,
     )
     .await?;
+    if let Some(engine) = engine.as_deref() {
+        toolbox_join_kind_network(cfg, engine).await?;
+    }
+    select_toolbox_kind_kubeconfig(cfg).await?;
 
     println!(">>> Waiting for cluster node to be ready...");
     // Explicitly switch kubectl to use the kind cluster context.
@@ -864,14 +990,17 @@ async fn bootstrap_local_registry(
         }
     }
 
-    println!(">>> Waiting for local registry API at localhost:{port}...");
+    println!(">>> Waiting for local registry API at {registry_name}:5000...");
     // Parity with the script's `curl --fail --retry N --retry-connrefused
     // --retry-delay 1`: one initial attempt plus N retries 1s apart; any
     // response below 400 succeeds (curl --fail's threshold); connection
     // errors (--retry-connrefused) and curl's documented transient
     // statuses (408, 429, 500, 502, 503, 504) are retried; any other
     // answer fails immediately instead of burning the retry budget.
-    let registry_url = format!("http://localhost:{port}/v2/");
+    // The probe address is where THIS process reaches the registry: the
+    // kind-network name inside the toolbox, the published port on the host.
+    let (registry_host, probe_port) = cfg.registry_endpoint();
+    let registry_url = format!("http://{registry_host}:{probe_port}/v2/");
     let mut ready = false;
     for attempt in 0..=cfg.registry_ready_retries {
         if let Ok(resp) = http.get(&registry_url).send().await {
@@ -881,7 +1010,7 @@ async fn bootstrap_local_registry(
                 break;
             }
             if !CURL_TRANSIENT_STATUSES.contains(&status) {
-                bail!("local registry at localhost:{port} returned {status}; not retrying");
+                bail!("local registry at {registry_url} returned {status}; not retrying");
             }
         }
         // Connection errors fall through and are retried (--retry-connrefused).
@@ -890,7 +1019,7 @@ async fn bootstrap_local_registry(
         }
     }
     if !ready {
-        bail!("local registry did not become ready at localhost:{port}");
+        bail!("local registry did not become ready at {registry_url}");
     }
 
     // Tell the cluster about the local registry (apply = rerun-safe).
@@ -911,9 +1040,13 @@ async fn bootstrap_local_registry(
     println!(">>> Publishing initial OCI artifact from the local Git checkout...");
     // Forward the resolved values: the mise oci-push task reads them from
     // its own environment, so they must not stop at this boundary.
+    // REGISTRY_HOST reroutes the task's own registry probe and push from
+    // the published localhost port to the kind-network name (toolbox runs).
+    let (registry_host, oci_port) = cfg.registry_endpoint();
     let status = Command::new("mise")
         .args(["-E", &cfg.profile, "run", "oci-push"])
-        .env("REGISTRY_PORT", cfg.registry_port.to_string())
+        .env("REGISTRY_PORT", oci_port.to_string())
+        .env("REGISTRY_HOST", &registry_host)
         .env("OCI_REPOSITORY", &cfg.oci_repository)
         .env("OCI_TAG", &cfg.oci_tag)
         .status()
@@ -1247,14 +1380,23 @@ async fn watch_local_reconciliation(cfg: &Config, engine: &str) -> Result<()> {
 
     let kubeconfig_content =
         capture("clusterctl", &["get", "kubeconfig", "local-workload"]).await?;
+    let recorded_endpoint = capd_recorded_endpoint(&kubeconfig_content);
     std::fs::write(workload_kubeconfig.path(), kubeconfig_content)?;
 
-    let port_output = capture(engine, &["port", "local-workload-lb", "6443/tcp"]).await?;
-    let Some(workload_port) = extract_workload_port(&port_output) else {
-        bail!("cannot determine the local-workload API server port");
+    // Host runs rewrite the endpoint to the published localhost port; the
+    // toolbox is on the kind network, where the CAPD-recorded endpoint
+    // already resolves, so the kubeconfig is written as-is.
+    let server = if cfg.should_rewrite_capd_endpoint() {
+        let port_output = capture(engine, &["port", "local-workload-lb", "6443/tcp"]).await?;
+        let Some(workload_port) = extract_workload_port(&port_output) else {
+            bail!("cannot determine the local-workload API server port");
+        };
+        format!("https://127.0.0.1:{workload_port}")
+    } else {
+        // Reuse the endpoint recorded by CAPD (kind-network address).
+        recorded_endpoint
+            .context("cannot read the local-workload endpoint from the CAPD kubeconfig")?
     };
-
-    let server = format!("https://127.0.0.1:{workload_port}");
     let kubeconfig_flag = format!("--kubeconfig={kubeconfig_path}");
     capture(
         "kubectl",
@@ -1379,10 +1521,25 @@ async fn watch_local_reconciliation(cfg: &Config, engine: &str) -> Result<()> {
 // The move stays re-runnable: objects are deleted from the source only after
 // they were created on the target, so kind stays authoritative until Phase 6.
 
+/// The engine binary toolbox network attach/detach must invoke. Host runs
+/// never need it; toolbox runs use the selected engine from preflight.
+async fn detect_engine_for_network(cfg: &Config) -> Option<String> {
+    if !cfg.toolbox {
+        return None;
+    }
+    Some(
+        cfg.container_engine
+            .clone()
+            .unwrap_or_else(|| "docker".to_string()),
+    )
+}
+
 /// One readiness probe of the local registry /v2/ endpoint (script: `curl
-/// --fail`): any response below 400 counts as serving.
-async fn registry_reachable(http: &reqwest::Client, port: u16) -> bool {
-    http.get(format!("http://localhost:{port}/v2/"))
+/// --fail`): any response below 400 counts as serving. The toolbox reaches
+/// the registry by network name instead of the published localhost port.
+async fn registry_reachable(cfg: &Config, http: &reqwest::Client) -> bool {
+    let (host, port) = cfg.registry_endpoint();
+    http.get(format!("http://{host}:{port}/v2/"))
         .send()
         .await
         .map(|r| r.status().as_u16() < 400)
@@ -1512,11 +1669,12 @@ async fn pivot_export_kubeconfig(cfg: &Config, engine: &str, mgmt_cluster: &str)
     }
     let kc = path.to_string_lossy().into_owned();
 
-    if cfg.is_local() {
+    if cfg.should_rewrite_capd_endpoint() {
         // CAPD records the load balancer's container-network IP, which is
         // not routable from macOS. Point the kubeconfig at the port
         // published on localhost instead (same rewrite as the workload
-        // kubeconfigs).
+        // kubeconfigs). Toolbox runs stay on the kind network where the
+        // recorded endpoint already resolves, so no rewrite.
         let lb = format!("{mgmt_cluster}-lb");
         let port_output = capture(engine, &["port", &lb, "6443/tcp"]).await?;
         let Some(port) = extract_workload_port(&port_output) else {
@@ -1977,7 +2135,7 @@ async fn pivot_delete_bootstrap_cluster(
         eprintln!("ERROR: no Clusters on the management cluster; refusing to delete kind.");
         bail!("no Clusters on the management cluster; refusing to delete kind");
     }
-    if cfg.is_local() && !registry_reachable(http, cfg.registry_port).await {
+    if cfg.is_local() && !registry_reachable(cfg, http).await {
         eprintln!(
             "ERROR: local registry unavailable; the management cluster's Flux depends on it."
         );
@@ -2030,7 +2188,7 @@ async fn run_pivot(cfg: &Config, preflight: &Preflight, http: &reqwest::Client) 
     // check is not repeated here.
     pivot_check_context(cfg).await?;
     pivot_check_management_cluster(&cfg.repo.bootstrap.mgmt_namespace, mgmt_cluster).await?;
-    if cfg.is_local() && !registry_reachable(http, cfg.registry_port).await {
+    if cfg.is_local() && !registry_reachable(cfg, http).await {
         eprintln!(
             "ERROR: local registry is unavailable at localhost:{}",
             cfg.registry_port
@@ -2107,7 +2265,9 @@ async fn main() -> Result<()> {
             registry_port: DEFAULT_REGISTRY_PORT,
             registry_ready_retries: DEFAULT_REGISTRY_READY_RETRIES,
             local_reconcile_timeout: DEFAULT_LOCAL_RECONCILE_TIMEOUT.to_string(),
-            container_engine: None,
+            container_engine: std::env::var("CONTAINER_ENGINE").ok(),
+            engine_sock: std::env::var("ENGINE_SOCK").ok(),
+            toolbox: std::env::var("KNR_TOOLBOX").is_ok_and(|value| value == "1"),
             git_repo_url: None,
             github_token: None,
             github_user: DEFAULT_GITHUB_USER.to_string(),
@@ -2373,6 +2533,62 @@ mod tests {
         assert_eq!(cfg.mgmt_poll_interval, 5);
         assert_eq!(cfg.mgmt_kubeconfig, PathBuf::from("/tmp/mgmt.yaml"));
         assert_eq!(cfg.bootstrap_kubecontext, "other-ctx");
+    }
+
+    #[test]
+    fn config_reads_toolbox_runtime_knobs() {
+        let cli = Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap();
+        let cfg = config_from(&cli, |name| match name {
+            "KNR_TOOLBOX" => Some("1".into()),
+            "ENGINE_SOCK" => Some("/run/user/501/podman/podman.sock".into()),
+            _ => None,
+        });
+
+        assert!(cfg.toolbox);
+        assert_eq!(
+            cfg.engine_sock.as_deref(),
+            Some("/run/user/501/podman/podman.sock")
+        );
+        assert_eq!(cfg.registry_endpoint(), ("knr-registry".into(), 5000));
+        assert!(!cfg.should_rewrite_capd_endpoint());
+    }
+
+    #[test]
+    fn host_runtime_keeps_localhost_endpoints() {
+        let cfg = config_from(
+            &Cli::try_parse_from(["knr-bootstrap", "local-host"]).unwrap(),
+            |_| None,
+        );
+
+        assert!(!cfg.toolbox);
+        assert!(cfg.engine_sock.is_none());
+        assert_eq!(cfg.registry_endpoint(), ("localhost".into(), 5001));
+        assert!(cfg.should_rewrite_capd_endpoint());
+    }
+
+    #[test]
+    fn toolbox_kind_kubeconfig_uses_one_explicit_file() {
+        assert_eq!(
+            toolbox_kubeconfig_path(true, Some("/state/kind.yaml")).unwrap(),
+            Some(PathBuf::from("/state/kind.yaml"))
+        );
+        assert!(toolbox_kubeconfig_path(true, None)
+            .unwrap_err()
+            .to_string()
+            .contains("KUBECONFIG"));
+        assert!(toolbox_kubeconfig_path(true, Some("/a:/b"))
+            .unwrap_err()
+            .to_string()
+            .contains("single file"));
+        assert_eq!(toolbox_kubeconfig_path(false, None).unwrap(), None);
+    }
+
+    #[test]
+    fn internal_kind_kubeconfig_command_targets_the_named_cluster() {
+        assert_eq!(
+            internal_kind_kubeconfig_args("mgmt"),
+            ["get", "kubeconfig", "--internal", "--name", "mgmt"]
+        );
     }
 
     #[test]

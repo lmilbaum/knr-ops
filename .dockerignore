@@ -6,6 +6,7 @@
 !bootstrap-rs/Cargo.toml
 !bootstrap-rs/Cargo.lock
 !bootstrap-rs/rust-toolchain.toml
+!bootstrap-rs/toolbox-entrypoint.sh
 !mise.toml
 !mise.aws.toml
 # Never ship build artifacts, secrets, or git history in the context.

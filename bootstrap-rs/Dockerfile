@@ -35,7 +35,12 @@ ARG TARGETARCH
 # docker-ce-cli (client only) comes from Docker's apt repo: bookworm has no
 # standalone docker-cli package, and docker.io would drag in the whole
 # engine. The client floats with the repo (client/server API is backward
-# compatible; the daemon always runs on the host).
+# compatible; the daemon always runs on the host). The podman remote client
+# (static build) provides the podman provider path kind and knr-bootstrap
+# exec (CONTAINER_ENGINE=podman); it talks to the host socket the run
+# invocation mounts.
+# renovate: datasource=github-releases depName=containers/podman extractVersion=^v(?<version>.+) versioning=semver
+ARG PODMAN_VERSION=5.5.2
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl git jq findutils gnupg \
@@ -55,7 +60,11 @@ RUN apt-get update \
        esac \
     && curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${MISE_ASSET}" \
          -o /usr/local/bin/mise \
-    && chmod +x /usr/local/bin/mise
+    && chmod +x /usr/local/bin/mise \
+    && curl -fsSL "https://github.com/containers/podman/releases/download/v${PODMAN_VERSION}/podman-remote-static-linux_${TARGETARCH}.tar.gz" \
+         | tar -xz -C /tmp --strip-components=1 "bin/podman-remote-static-linux_${TARGETARCH}" \
+    && mv "/tmp/podman-remote-static-linux_${TARGETARCH}" /usr/local/bin/podman \
+    && chmod +x /usr/local/bin/podman
 
 # The repository is mounted at /workspace at run time; mise runs from the
 # working directory with both env layers available (aws tools per the #104
@@ -65,7 +74,10 @@ ENV MISE_DATA_DIR=/usr/local/share/mise \
     PATH=/usr/local/share/mise/shims:/usr/local/bin:/usr/bin:/sbin:/bin
 
 COPY --from=build /usr/local/bin/knr-bootstrap /usr/local/bin/knr-bootstrap
+COPY bootstrap-rs/toolbox-entrypoint.sh /usr/local/bin/toolbox-entrypoint.sh
 COPY mise.toml mise.aws.toml /opt/knr-ops/
+
+RUN chmod +x /usr/local/bin/toolbox-entrypoint.sh
 
 # Install every tool the configs pin except the dev-only toolchains the
 # lifecycle never invokes (go, python, zarf: airgap builds run on the

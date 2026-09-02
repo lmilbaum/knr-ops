@@ -168,6 +168,16 @@
     },
     {
       "customType": "regex",
+      "description": "toolbox image: podman remote client pin (issue #104)",
+      "managerFilePatterns": ["bootstrap-rs/Dockerfile"],
+      "matchStrings": ["ARG PODMAN_VERSION=(?<currentValue>[0-9][^\\s]*)"],
+      "depNameTemplate": "containers/podman",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "ARG PODMAN_VERSION={{newValue}}"
+    },
+    {
+      "customType": "regex",
       "description": "mise: aws-cli pin (floating latest tag)",
       "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
       "matchStrings": ["aws-cli = \"(?<currentValue>[^\"]+)\""],

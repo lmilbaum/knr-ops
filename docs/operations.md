@@ -2,6 +2,43 @@
 
 ## Prerequisites
 
+### Toolbox container (primary interface, issue #104)
+
+The toolbox image (`ghcr.io/polarsquad/knr-ops-toolbox`) carries the bootstrap
+CLI plus every pinned tool. The host needs only a running container engine —
+Docker, or Podman 5.5+ — and the repository checkout. The engine socket is
+mounted into the container; kind creates its clusters through it. The
+documented interface is the raw run invocation:
+
+```sh
+docker run --rm -it \
+  -v "$PWD:/workspace" -w /workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.kube:/root/.kube" \
+  -e KUBECONFIG=/workspace/.kube/kind.yaml \
+  ghcr.io/polarsquad/knr-ops-toolbox:latest
+```
+
+Podman is the same invocation with `podman run` and the podman socket. The
+socket path differs by platform; `scripts/toolbox-run.sh` (which
+`mise run bootstrap`/`pivot`/`teardown` wrap) resolves it for Docker
+Desktop, rootful/rootless Podman, and podman machine, forwards `.env` with
+proper quote handling, and keeps kubeconfig state under the repo-local
+`.kube/` directory (gitignored).
+
+How the toolbox reaches what it needs:
+
+- The toolbox joins the `kind` Docker network after cluster creation, so the
+  internal API endpoint (`kind get kubeconfig --internal`) and the local
+  registry (`knr-registry:5000`) resolve by name.
+- Host-only rewrites (published localhost ports) are skipped inside the
+  toolbox; the CAPD-recorded endpoints already resolve there.
+- KUBECONFIG must name one writable file (the wrapper sets
+  `/workspace/.kube/kind.yaml`); the CLI rewrites it with the internal
+  kubeconfig after each `kind create`.
+
+### Native host path
+
 Tool versions are pinned in `mise.toml`, which requires mise 2026.8.10 or
 newer. With [mise](https://mise.jdx.dev/) installed:
 
@@ -71,7 +108,7 @@ AWS credentials, and `AWS_REGION` are only needed with the AWS environment.
 ## Bootstrap
 
 ```sh
-mise run bootstrap                 # AWS environment
+mise run bootstrap                 # AWS environment (toolbox container via scripts/toolbox-run.sh)
 mise -E local-host run bootstrap   # local-host environment
 ```
 

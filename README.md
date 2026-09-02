@@ -77,9 +77,18 @@ not a developer self-service portal; you are the consumer.
 
 ## Prerequisites
 
+The toolbox container is the primary interface (issue #104): the only host
+prerequisite is a running container engine.
+
+- A running Docker engine, or Podman 5.5+ (kind creates the clusters through
+  the engine socket the toolbox mounts)
+- The toolbox image: `ghcr.io/polarsquad/knr-ops-toolbox` (published on semver
+  tags), or built locally with
+  `docker build -f bootstrap-rs/Dockerfile -t knr-ops-toolbox:dev .`
+
+The native host path (development and air-gap work) additionally needs:
+
 - Mise 2026.8.10 or newer
-- A running Docker engine, or Podman 5.5+, for kind; the local-host
-  environment also uses it for its local OCI registry
 - Rust toolchain (via [rustup](https://rustup.rs/); the exact pin lives in
   `bootstrap-rs/rust-toolchain.toml`) to build the bootstrap CLI
 - AWS environment only: GitHub personal access token (PAT) with read access
@@ -88,6 +97,27 @@ not a developer self-service portal; you are the consumer.
   environment
 
 ## Quickstart
+
+With only a container engine (the primary interface, issue #104):
+
+```sh
+cp .env.example .env        # AWS environment only: fill in GitHub PAT and AWS settings
+docker run --rm -it \
+  -v "$PWD:/workspace" -w /workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/.kube:/root/.kube" \
+  -e KUBECONFIG=/workspace/.kube/kind.yaml \
+  ghcr.io/polarsquad/knr-ops-toolbox:latest
+# teardown: same invocation with `teardown` appended
+```
+
+`scripts/toolbox-run.sh` wraps the invocation (engine and socket detection,
+`.env` passthrough, repo-local kubeconfig state); `mise run bootstrap` and
+`mise run teardown` call it for hosts that already have mise. See
+[docs/operations.md](docs/operations.md) for the Podman form and the full
+runtime contract.
+
+The native host path (development):
 
 ```sh
 mise trust                  # to enable mise in this repository
