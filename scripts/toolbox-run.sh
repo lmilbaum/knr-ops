@@ -77,6 +77,10 @@ case "$CONTAINER_ENGINE" in
     exit 1
     ;;
 esac
+# Forward the daemon-side socket path to the toolbox: the entrypoint's static
+# fallbacks cannot know the Linux-rootless session socket or a non-default
+# Docker context path.
+export ENGINE_SOCK="$ENGINE_SOCK_IN"
 
 # ── .env passthrough with quote stripping ─────────────────────────────────────
 # Load KEY="value" / KEY='value' / KEY=value lines into this shell so the
@@ -149,6 +153,5 @@ exec "$CONTAINER_ENGINE" run --rm "${TTY_ARGS[@]}" \
   -v "$REPO_ROOT/.kube:/root/.kube" \
   -e KUBECONFIG="$KUBECONFIG_IN" \
   "${PASS_ENV[@]}" \
-  --entrypoint /usr/local/bin/knr-bootstrap \
   "$TOOLBOX_IMAGE" \
   "${CLI_ARGS[@]}"

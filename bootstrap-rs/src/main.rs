@@ -757,7 +757,9 @@ fn toolbox_container_id() -> Option<String> {
 
 /// Attach the toolbox container to the kind network so kind-network
 /// endpoints (the internal API server, knr-registry:5000) resolve.
-/// Idempotent: an already-attached container is success.
+/// Idempotent: docker exits 0 on re-attach, but podman errors with "is
+/// already connected", so failures are retried against a captured-error
+/// check instead of string-matching the (inherited) stderr.
 pub(crate) async fn toolbox_join_kind_network(cfg: &Config, engine: &str) -> Result<()> {
     if !cfg.toolbox {
         return Ok(());
@@ -765,12 +767,26 @@ pub(crate) async fn toolbox_join_kind_network(cfg: &Config, engine: &str) -> Res
     let Some(id) = toolbox_container_id() else {
         bail!("KNR_TOOLBOX=1 but /etc/hostname is unreadable; cannot join the kind network");
     };
-    match capture(engine, &["network", "connect", "kind", &id]).await {
-        Ok(_) => Ok(()),
-        // docker: "already exists in network"; podman: "is already connected"
-        Err(e) if e.to_string().contains("already") => Ok(()),
-        Err(e) => Err(e).context("attaching the toolbox to the kind network failed"),
+    let out = Command::new(engine)
+        .args(["network", "connect", "kind", &id])
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("failed to spawn '{engine}'"))?;
+    if out.status.success() {
+        return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // docker: "already exists in network"; podman: "is already connected"
+    // (or "already connected" on newer releases).
+    if stderr.to_lowercase().contains("already") {
+        return Ok(());
+    }
+    bail!(
+        "'{engine} network connect kind {id}' failed with {}:\n{}",
+        out.status,
+        stderr.trim_end()
+    );
 }
 
 /// Best-effort detach before `kind delete cluster`: kind removes the network
@@ -931,7 +947,7 @@ async fn bootstrap_local_registry(
             ],
         )
         .await?;
-        println!("    Registry created and running: localhost:{port}");
+        println!("    Registry created and running: {registry_name}:5000");
     } else {
         // Name match alone proves nothing about configuration. Verify the
         // host-port binding and the kind-network attachment; a stale
@@ -971,7 +987,7 @@ async fn bootstrap_local_registry(
                 ],
             )
             .await?;
-            println!("    Registry recreated: localhost:{port}");
+            println!("    Registry recreated: {registry_name}:5000");
         } else {
             let running = capture_lossy(
                 engine,
@@ -983,14 +999,16 @@ async fn bootstrap_local_registry(
             if !running {
                 println!("    Restarting stopped registry...");
                 capture(engine, &["start", registry_name]).await?;
-                println!("    Registry restarted: localhost:{port}");
+                println!("    Registry restarted: {registry_name}:5000");
             } else {
-                println!("    Registry already running: localhost:{port}");
+                println!("    Registry already running: {registry_name}:5000");
             }
         }
     }
 
-    println!(">>> Waiting for local registry API at {registry_name}:5000...");
+    let (registry_host, probe_port) = cfg.registry_endpoint();
+    let registry_url = format!("http://{registry_host}:{probe_port}/v2/");
+    println!(">>> Waiting for local registry API at {registry_host}:{probe_port}...");
     // Parity with the script's `curl --fail --retry N --retry-connrefused
     // --retry-delay 1`: one initial attempt plus N retries 1s apart; any
     // response below 400 succeeds (curl --fail's threshold); connection
@@ -999,8 +1017,6 @@ async fn bootstrap_local_registry(
     // answer fails immediately instead of burning the retry budget.
     // The probe address is where THIS process reaches the registry: the
     // kind-network name inside the toolbox, the published port on the host.
-    let (registry_host, probe_port) = cfg.registry_endpoint();
-    let registry_url = format!("http://{registry_host}:{probe_port}/v2/");
     let mut ready = false;
     for attempt in 0..=cfg.registry_ready_retries {
         if let Ok(resp) = http.get(&registry_url).send().await {
@@ -2144,6 +2160,12 @@ async fn pivot_delete_bootstrap_cluster(
     }
 
     println!(">>> Deleting the kind bootstrap cluster...");
+    // The toolbox must leave the kind network first: kind removes the
+    // network with the last node, and an attached toolbox container would
+    // keep it alive (same guard as --recreate and teardown).
+    if let Some(engine) = detect_engine_for_network(cfg).await {
+        toolbox_leave_kind_network(cfg, &engine).await;
+    }
     run(
         "kind",
         &[

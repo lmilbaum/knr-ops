@@ -89,4 +89,4 @@ RUN cd /opt/knr-ops \
     && mise reshim
 
 WORKDIR /workspace
-ENTRYPOINT ["/usr/local/bin/knr-bootstrap"]
+ENTRYPOINT ["/usr/local/bin/toolbox-entrypoint.sh"]
