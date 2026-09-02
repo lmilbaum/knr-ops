@@ -6,10 +6,16 @@ on:
     branches: [main]
     paths:
       - "bootstrap-rs/**"
+      - "mise.toml"
+      - "mise.aws.toml"
+      - ".dockerignore"
       - ".github/workflows/bootstrap-rs.yml"
   pull_request:
     paths:
       - "bootstrap-rs/**"
+      - "mise.toml"
+      - "mise.aws.toml"
+      - ".dockerignore"
       - ".github/workflows/bootstrap-rs.yml"
 
 permissions:
