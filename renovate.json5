@@ -158,6 +158,16 @@
     },
     {
       "customType": "regex",
+      "description": "toolbox image: mise CLI pin (issue #104)",
+      "managerFilePatterns": ["bootstrap-rs/Dockerfile"],
+      "matchStrings": ["ARG MISE_VERSION=(?<currentValue>[0-9][^\\s]*)"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)",
+      "autoReplaceStringTemplate": "ARG MISE_VERSION={{newValue}}"
+    },
+    {
+      "customType": "regex",
       "description": "mise: aws-cli pin (floating latest tag)",
       "managerFilePatterns": ["/(^|/)mise\\.aws\\.toml$/"],
       "matchStrings": ["aws-cli = \"(?<currentValue>[^\"]+)\""],
@@ -307,6 +317,12 @@
       "description": "Pin air-gap container images by digest while retaining readable tags",
       "matchDatasources": ["docker"],
       "matchFileNames": ["airgap/images.txt", "airgap/zarf.yaml"],
+      "pinDigests": true
+    },
+    {
+      "description": "Pin toolbox image base images by digest (issue #104)",
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["bootstrap-rs/Dockerfile"],
       "pinDigests": true
     },
     {

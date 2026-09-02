@@ -1,0 +1,15 @@
+# Keep the toolbox image context (docker build -f bootstrap-rs/Dockerfile .)
+# to what the image actually needs: bootstrap-rs sources + mise configs.
+*
+!bootstrap-rs/
+!bootstrap-rs/src/
+!bootstrap-rs/Cargo.toml
+!bootstrap-rs/Cargo.lock
+!bootstrap-rs/rust-toolchain.toml
+!mise.toml
+!mise.aws.toml
+# Never ship build artifacts, secrets, or git history in the context.
+bootstrap-rs/target/
+.env
+age.agekey
+.git
