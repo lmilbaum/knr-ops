@@ -50,8 +50,10 @@ resources. There is no app source code here, only declarative infrastructure.
   `rust-toolchain.toml`.
 - `bootstrap.sh` / `pivot.sh` / `teardown.sh`: the shell equivalents of the
   CLI's phases. Kept until the binary completes full parity runs per
-  environment, then retired (issues #92/#95/#100). `mise run bootstrap` and
-  `mise run pivot` still invoke the scripts.
+  environment, then retired (issues #92/#95/#100). The lifecycle mise tasks
+  (`bootstrap`/`pivot`/`teardown`) run the knr-ops-toolbox container via
+  `scripts/toolbox-run.sh` (issue #104); the scripts remain the native path
+  for development.
 - `docs/`: detailed documentation (see the table in README.md).
 - `mise.toml`: pinned tool versions and all task entrypoints.
   `mise.aws.toml` is the AWS tool layer (aws-cli, clusterawsadm),
@@ -109,9 +111,9 @@ Each component pairs a plain kustomize root with a Flux `Kustomization`:
 ```sh
 mise install            # install pinned tools (kubectl, kind, flux, sops, age, ...)
 mise run validate       # build every kustomize overlay; mirrors CI
-mise run bootstrap      # one-time kind cluster + Flux handoff + pivot to self-managed mgmt
+mise run bootstrap      # toolbox container: kind cluster + Flux handoff + pivot to self-managed mgmt
 mise -E aws run kubeconfigs  # export AWS workload-cluster kubeconfigs
-mise run teardown       # full teardown (EKS, AWS resources, kind)
+mise run teardown       # toolbox container: full teardown (EKS, AWS resources, kind)
 ```
 
 ## Editing renovate.json5

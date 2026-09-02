@@ -14,6 +14,8 @@ age.agekey
 
 # Generated local Cluster API workload kubeconfig
 local-workload.kubeconfig
+# Toolbox container kubeconfig state (scripts/toolbox-run.sh)
+.kube/
 airgap/archives/
 airgap/rendered/
 airgap/sbom/

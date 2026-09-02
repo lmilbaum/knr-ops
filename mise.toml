@@ -80,12 +80,12 @@ done
 """
 
 [tasks.bootstrap]
-description = "Bootstrap the management kind cluster, hand off to Flux/GitOps, then pivot to the self-managed management cluster"
-run = "./bootstrap.sh"
+description = "Bootstrap the management kind cluster, hand off to Flux/GitOps, then pivot to the self-managed management cluster (toolbox container; native path: ./bootstrap.sh)"
+run = "scripts/toolbox-run.sh bootstrap"
 
 [tasks.pivot]
-description = "Pivot the management cluster from local kind to the CAPI-managed management cluster (aws=CAPA/EKS, local-host=CAPD)"
-run = "./pivot.sh"
+description = "Pivot the management cluster from local kind to the CAPI-managed management cluster (aws=CAPA/EKS, local-host=CAPD) (toolbox container; native path: ./pivot.sh)"
+run = "scripts/toolbox-run.sh pivot"
 
 [tasks.mgmt-kubeconfig]
 description = "Export the management-cluster kubeconfig to ~/.kube/knr-ops-mgmt.yaml"
@@ -122,5 +122,5 @@ description = "Export AWS credentials as a profile string for SOPS-encrypted sec
 run = "clusterawsadm bootstrap credentials encode-as-profile"
 
 [tasks.teardown]
-description = "Tear down all infrastructure created by bootstrap"
-run = "./teardown.sh"
+description = "Tear down all infrastructure created by bootstrap (toolbox container; native path: ./teardown.sh)"
+run = "scripts/toolbox-run.sh teardown"

@@ -17,7 +17,10 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 
-use crate::{capture_lossy, kubectl_cmd, run, run_quiet, Config};
+use crate::{
+    capture_lossy, kubectl_cmd, run, run_quiet, select_toolbox_kind_kubeconfig,
+    toolbox_join_kind_network, toolbox_leave_kind_network, Config,
+};
 
 // ── Configuration knobs (teardown.sh `${VAR:-default}` equivalents) ───────────
 
@@ -1639,8 +1642,16 @@ pub async fn run_teardown(cfg: &Config, tcfg: &TeardownConfig) -> Result<()> {
                 .any(|l| l.trim() == cfg.repo.bootstrap.kind_cluster);
 
         let kc: Option<String> = if kind_present {
-            // The kind context is switched to and becomes current; the
-            // k8s calls run without --kubeconfig.
+            // Toolbox runs: join the kind network so the internal API
+            // endpoint resolves, then rewrite KUBECONFIG to kind's
+            // internal kubeconfig. kubectl picks KUBECONFIG up from the
+            // environment, so the k8s calls below need no --kubeconfig.
+            if cfg.toolbox {
+                if let Some(engine) = engine.as_deref() {
+                    toolbox_join_kind_network(cfg, engine).await?;
+                    select_toolbox_kind_kubeconfig(cfg).await?;
+                }
+            }
             let _ = run(
                 "kubectl",
                 &["config", "use-context", &cfg.repo.bootstrap.kind_context],
@@ -1693,6 +1704,14 @@ pub async fn run_teardown(cfg: &Config, tcfg: &TeardownConfig) -> Result<()> {
                 ">>> Deleting kind management cluster '{}'...",
                 cfg.repo.bootstrap.kind_cluster
             );
+            // Toolbox runs must leave the kind network first: kind removes
+            // the network with the last node, and an attached toolbox
+            // container would keep it alive.
+            if cfg.toolbox {
+                if let Some(engine) = engine.as_deref() {
+                    toolbox_leave_kind_network(cfg, engine).await;
+                }
+            }
             let kind_name = cfg.repo.bootstrap.kind_cluster.clone();
             if run("kind", &["delete", "cluster", "--name", &kind_name])
                 .await

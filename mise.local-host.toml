@@ -9,9 +9,12 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) \
 cd "$REPO_ROOT"
 
 REGISTRY_PORT="${REGISTRY_PORT:-5001}"
+# Toolbox runs reach the registry by kind-network name (the CLI exports
+# REGISTRY_HOST=knr-registry there); host runs default to localhost.
+REGISTRY_HOST="${REGISTRY_HOST:-localhost}"
 OCI_REPOSITORY="${OCI_REPOSITORY:-knr-ops}"
 OCI_TAG="${OCI_TAG:-latest}"
-OCI_URL="oci://localhost:${REGISTRY_PORT}/${OCI_REPOSITORY}:${OCI_TAG}"
+OCI_URL="oci://${REGISTRY_HOST}:${REGISTRY_PORT}/${OCI_REPOSITORY}:${OCI_TAG}"
 OCI_MGMT_SOURCE_PATH="mgmt/local-host"
 OCI_WORKLOAD_SOURCE_PATH="workload/local-host"
 
@@ -22,8 +25,8 @@ for source_path in "$OCI_MGMT_SOURCE_PATH" "$OCI_WORKLOAD_SOURCE_PATH"; do
   fi
 done
 
-if ! curl --fail --silent --show-error "http://localhost:${REGISTRY_PORT}/v2/" >/dev/null; then
-  echo "ERROR: local registry is unavailable at localhost:${REGISTRY_PORT}" >&2
+if ! curl --fail --silent --show-error "http://${REGISTRY_HOST}:${REGISTRY_PORT}/v2/" >/dev/null; then
+  echo "ERROR: local registry is unavailable at ${REGISTRY_HOST}:${REGISTRY_PORT}" >&2
   echo "       Start it with: mise -E local-host run bootstrap" >&2
   exit 1
 fi
