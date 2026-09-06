@@ -47,24 +47,30 @@ REQUIRED_SINGLE_REGISTRY = {
 
 
 def assert_single_registry_per_helm_package(result) -> list[str]:
-    """Regression for issue #187: each chart pin should have exactly one registry."""
+    """Regression for issue #187: each tracked Helm pin should resolve to one registry."""
     errors = []
     for package_file in ["bootstrap.toml", "pivot.sh"]:
         for dep in result.deps_by_file.get(package_file, []):
             dep_name = dep.get("depName")
             if dep_name not in REQUIRED_SINGLE_REGISTRY:
                 continue
-            registry_urls = dep.get("registryUrls") or []
             expected = REQUIRED_SINGLE_REGISTRY[dep_name]
-            if not registry_urls:
+            registry_urls = dep.get("registryUrls") or []
+            registry_url = dep.get("registryUrl")
+
+            if registry_urls:
+                normalized = [url.rstrip("/") for url in registry_urls]
+            elif registry_url:
+                normalized = [registry_url.rstrip("/")]
+            else:
                 errors.append(
-                    f"{package_file}: {dep_name} has no registryUrls (expected {expected})"
+                    f"{package_file}: {dep_name} has no registryUrl/registryUrls (expected {expected})"
                 )
                 continue
-            normalized = [url.rstrip("/") for url in registry_urls]
+
             if len(normalized) != 1 or normalized[0] != expected.rstrip("/"):
                 errors.append(
-                    f"{package_file}: {dep_name} registryUrls={normalized!r}, expected [{expected}]"
+                    f"{package_file}: {dep_name} registry values={normalized!r}, expected [{expected}]"
                 )
     return errors
 
