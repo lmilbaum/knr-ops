@@ -40,6 +40,34 @@ EXPECTED = {
     "mise.local-talos.toml": {"siderolabs/talos"},
 }
 
+REQUIRED_SINGLE_REGISTRY = {
+    "cert-manager": "https://charts.jetstack.io",
+    "cluster-api-operator": "https://kubernetes-sigs.github.io/cluster-api-operator",
+}
+
+
+def assert_single_registry_per_helm_package(result) -> list[str]:
+    """Regression for issue #187: each chart pin should have exactly one registry."""
+    errors = []
+    for package_file in ["bootstrap.toml", "pivot.sh"]:
+        for dep in result.deps_by_file.get(package_file, []):
+            dep_name = dep.get("depName")
+            if dep_name not in REQUIRED_SINGLE_REGISTRY:
+                continue
+            registry_urls = dep.get("registryUrls") or []
+            expected = REQUIRED_SINGLE_REGISTRY[dep_name]
+            if not registry_urls:
+                errors.append(
+                    f"{package_file}: {dep_name} has no registryUrls (expected {expected})"
+                )
+                continue
+            normalized = [url.rstrip("/") for url in registry_urls]
+            if len(normalized) != 1 or normalized[0] != expected.rstrip("/"):
+                errors.append(
+                    f"{package_file}: {dep_name} registryUrls={normalized!r}, expected [{expected}]"
+                )
+    return errors
+
 
 def main() -> int:
     result = run_renovate(EXPECTED)
@@ -49,17 +77,21 @@ def main() -> int:
         for path, deps in EXPECTED.items()
         if deps - result.dep_names(path)
     }
-    if result.returncode or missing:
+    registry_errors = assert_single_registry_per_helm_package(result)
+    if result.returncode or missing or registry_errors:
         print("Renovate coverage check failed", file=sys.stderr)
         print(f"exit code: {result.returncode}", file=sys.stderr)
         if missing:
             for path, deps in sorted(missing.items()):
                 print(f"{path}: missing detection for {deps}", file=sys.stderr)
+        for message in registry_errors:
+            print(message, file=sys.stderr)
         result.print_diagnostics()
         return 1
 
     for path in sorted(EXPECTED):
         print(f"{path}: pin(s) detected: {sorted(result.dep_names(path))}")
+    print("helm registry URLs: single registry per tracked chart pin")
     return 0
 
 
