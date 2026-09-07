@@ -34,7 +34,7 @@ spec:
             name: docker-management-worker
 ---
 # NOTE: CAPD places every node/lb container on the docker network "kind" by
-# default (no API field for it). That is load-bearing here: knr-registry is
+# default (no API field for it). That is load-bearing here: krops-registry is
 # attached to the same network, so nodes can pull the OCI artifact that Flux
 # syncs mgmt/local-host from, and the network survives `kind delete cluster`
 # because the registry stays attached.
@@ -86,7 +86,7 @@ spec:
     spec:
       backend:
         docker:
-          customImage: kindest/node:v1.37.0
+          customImage: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
           extraMounts:
             - hostPath: /var/run/docker.sock
               containerPath: /var/run/docker.sock
@@ -101,7 +101,7 @@ spec:
     spec:
       backend:
         docker:
-          customImage: kindest/node:v1.37.0
+          customImage: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
           extraMounts:
             - hostPath: /var/run/docker.sock
               containerPath: /var/run/docker.sock

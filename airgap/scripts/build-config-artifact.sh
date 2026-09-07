@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# build-config-artifact.sh — build the airgap-trimmed knr-ops config tree and
+# build-config-artifact.sh — build the airgap-trimmed krops config tree and
 # push it to the connected-side OCI registry, ready to be baked into the
-# Zarf package (zarf.yaml lists it under the knr-ops-config component images).
+# Zarf package (zarf.yaml lists it under the krops-config component images).
 #
 # Connected-side only. Requires: flux CLI and an OCI registry. By default it
-# uses the knr-registry container from `mise -E local-host run bootstrap`.
+# uses the krops-registry container from `mise -E local-host run bootstrap`.
 #
 # Why a trimmed tree: in the gap the substrate (cert-manager, CAPI, CAAPH,
 # flux-operator) is deployed by Zarf, and the capi-operator HelmRelease /
@@ -18,12 +18,12 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 REGISTRY_PORT="${REGISTRY_PORT:-5001}"
-OCI_REPOSITORY="${OCI_REPOSITORY:-knr-ops-airgap}"
+OCI_REPOSITORY="${OCI_REPOSITORY:-krops-airgap}"
 OCI_TAG="${OCI_TAG:-latest}"
 OCI_REGISTRY="${OCI_REGISTRY:-localhost:${REGISTRY_PORT}}"
 OCI_URL="oci://${OCI_REGISTRY}/${OCI_REPOSITORY}:${OCI_TAG}"
 
-ARTIFACT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/knr-ops-airgap-oci.XXXXXX")
+ARTIFACT_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/krops-airgap-oci.XXXXXX")
 cleanup() { rm -rf "$ARTIFACT_ROOT"; }
 trap cleanup EXIT
 
@@ -38,7 +38,7 @@ cp mgmt/local-host/addons/cni/flux-ks.yaml "$LH/addons/cni/flux-ks.yaml"
 cp mgmt/local-host/addons/flux-apps/kustomization.yaml "$LH/addons/flux-apps/kustomization.yaml"
 
 # Airgap variant of the per-cluster flux-operator HelmChartProxy: fetch the
-# chart from knr-registry (seeded by stage-and-create-cluster.sh) instead of
+# chart from krops-registry (seeded by stage-and-create-cluster.sh) instead of
 # ghcr.io, which is unreachable in the gap.
 cat > "$LH/addons/flux-apps/flux-operator.yaml" <<'EOF'
 apiVersion: addons.cluster.x-k8s.io/v1alpha1
@@ -50,8 +50,8 @@ spec:
   clusterSelector:
     matchLabels:
       fluxcd: enabled
-      knr-ops.polarsquad.com/environment: local-host
-  repoURL: oci://knr-registry:5000/charts
+      krops.polarsquad.com/environment: local-host
+  repoURL: oci://krops-registry:5000/charts
   chartName: flux-operator
   version: "0.58.0"
   # Pinned release name, matching mgmt/*/addons/flux-apps/flux-operator.yaml:
@@ -72,7 +72,7 @@ EOF
 # tags (the embedded distribution's manifest-list digests do not resolve in a
 # single-arch registry). The tag images are pre-loaded into the CAPD node
 # stores via preLoadImages (see the cluster-class patch below), so no workload
-# pod ever needs the internet. sync.url keeps pointing at knr-registry, which
+# pod ever needs the internet. sync.url keeps pointing at krops-registry, which
 # stage-and-create-cluster.sh recreates and seeds in the gap.
 cat > "$LH/addons/flux-apps/flux-instance.yaml" <<'EOF'
 apiVersion: v1
@@ -112,7 +112,7 @@ data:
         domain: cluster.local
       sync:
         kind: OCIRepository
-        url: oci://knr-registry:5000/knr-ops
+        url: oci://krops-registry:5000/krops
         ref: latest
         path: workload/local-host
       kustomize:
@@ -126,28 +126,28 @@ data:
           - patch: |
               - op: replace
                 path: /spec/template/spec/containers/0/image
-                value: ghcr.io/fluxcd/source-controller:v1.9.4
+                value: ghcr.io/fluxcd/source-controller:v1.9.4@sha256:8a8ed0a57b8b86f561d5a4309a69f65e62f0cebe4de8801593c5ff35a3bc3c23
             target:
               kind: Deployment
               name: source-controller
           - patch: |
               - op: replace
                 path: /spec/template/spec/containers/0/image
-                value: ghcr.io/fluxcd/kustomize-controller:v1.9.4
+                value: ghcr.io/fluxcd/kustomize-controller:v1.9.4@sha256:2b8bec54ffb6caf421bd2a6c005d27f567d5dd4db7feb55794fb51fcabd69b8f
             target:
               kind: Deployment
               name: kustomize-controller
           - patch: |
               - op: replace
                 path: /spec/template/spec/containers/0/image
-                value: ghcr.io/fluxcd/helm-controller:v1.6.3
+                value: ghcr.io/fluxcd/helm-controller:v1.6.3@sha256:16ada99456385100698a5d7adf90aba8a2089d987ab541c9566b6d7b0e897038
             target:
               kind: Deployment
               name: helm-controller
           - patch: |
               - op: replace
                 path: /spec/template/spec/containers/0/image
-                value: ghcr.io/fluxcd/notification-controller:v1.9.3
+                value: ghcr.io/fluxcd/notification-controller:v1.9.3@sha256:071c351a0fb163eeb6a2bb82f1e894f51b6b0734216d2e97d3d99c9ab9d710b9
             target:
               kind: Deployment
               name: notification-controller
@@ -161,7 +161,7 @@ spec:
   clusterSelector:
     matchLabels:
       fluxcd: enabled
-      knr-ops.polarsquad.com/environment: local-host
+      krops.polarsquad.com/environment: local-host
   strategy: ApplyOnce
   resources:
     - kind: ConfigMap
@@ -185,16 +185,16 @@ import sys
 path = sys.argv[1]
 txt = open(path).read()
 preload = """          preLoadImages:
-            - registry.k8s.io/pause:3.10.1
-            - docker.io/kindest/kindnetd:v20260528-9350166c
-            - ghcr.io/controlplaneio-fluxcd/flux-operator:v0.58.0
-            - ghcr.io/fluxcd/source-controller:v1.9.4
-            - ghcr.io/fluxcd/kustomize-controller:v1.9.4
-            - ghcr.io/fluxcd/helm-controller:v1.6.3
-            - ghcr.io/fluxcd/notification-controller:v1.9.3
-            - ghcr.io/stefanprodan/podinfo:6.14.0
+            - registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c
+            - docker.io/kindest/kindnetd:v20260528-9350166c@sha256:92f49a1b2c9242058481fc3e13412c19a62cfeb090717dad4598719d32351f1f
+            - ghcr.io/controlplaneio-fluxcd/flux-operator:v0.58.0@sha256:1c919ce1e28716f817ded65c06df0b7a8269542387d5a2ce50212450473c6209
+            - ghcr.io/fluxcd/source-controller:v1.9.4@sha256:8a8ed0a57b8b86f561d5a4309a69f65e62f0cebe4de8801593c5ff35a3bc3c23
+            - ghcr.io/fluxcd/kustomize-controller:v1.9.4@sha256:2b8bec54ffb6caf421bd2a6c005d27f567d5dd4db7feb55794fb51fcabd69b8f
+            - ghcr.io/fluxcd/helm-controller:v1.6.3@sha256:16ada99456385100698a5d7adf90aba8a2089d987ab541c9566b6d7b0e897038
+            - ghcr.io/fluxcd/notification-controller:v1.9.3@sha256:071c351a0fb163eeb6a2bb82f1e894f51b6b0734216d2e97d3d99c9ab9d710b9
+            - ghcr.io/stefanprodan/podinfo:6.14.0@sha256:0a8aa037137c010a75aed8d3fe56931d0edd3bcd0e55acfb96db11e1e96397b1
 """
-anchor = "          customImage: kindest/node:v1.37.0\n"
+anchor = "          customImage: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5\n"
 count = txt.count(anchor)
 if count != 2:
     sys.exit(f"ERROR: expected 2 DevMachineTemplate customImage anchors, found {count}")
@@ -203,7 +203,7 @@ open(path, "w").write(txt)
 print(f"patched {path}: preLoadImages added to {count} DevMachineTemplates")
 PY
 
-# Workload tree: rewrite the podinfo chart OCI URL to knr-registry (seeded in
+# Workload tree: rewrite the podinfo chart OCI URL to krops-registry (seeded in
 # the gap) and mark the OCIRepository insecure (plain HTTP). The FluxInstance
 # insecure patch only covers the operator-generated sync source, not
 # tree-defined OCIRepositories. Everything else ships verbatim.
@@ -214,23 +214,23 @@ path = sys.argv[1]
 txt = open(path).read()
 txt = txt.replace(
     "oci://ghcr.io/stefanprodan/charts/podinfo",
-    "oci://knr-registry:5000/stefanprodan/charts/podinfo",
+    "oci://krops-registry:5000/stefanprodan/charts/podinfo",
 )
 if "insecure: true" not in txt:
     txt = txt.replace("spec:\n  interval: 1h\n  url:", "spec:\n  interval: 1h\n  insecure: true\n  url:", 1)
 open(path, "w").write(txt)
-assert "insecure: true" in txt and "knr-registry" in txt
-print(f"patched {path}: podinfo chart -> knr-registry, insecure: true")
+assert "insecure: true" in txt and "krops-registry" in txt
+print(f"patched {path}: podinfo chart -> krops-registry, insecure: true")
 PY
 
-# Optional registry override: WORKLOAD_REGISTRY_HOST (default knr-registry)
+# Optional registry override: WORKLOAD_REGISTRY_HOST (default krops-registry)
 # rewrites the workload-side registry references. Use a distinct name when
 # rehearsing on a host that already runs a live baseline, so the rehearsal's
-# seeded registry never touches the baseline's knr-ops:latest.
-if [ -n "${WORKLOAD_REGISTRY_HOST:-}" ] && [ "$WORKLOAD_REGISTRY_HOST" != "knr-registry" ]; then
+# seeded registry never touches the baseline's krops:latest.
+if [ -n "${WORKLOAD_REGISTRY_HOST:-}" ] && [ "$WORKLOAD_REGISTRY_HOST" != "krops-registry" ]; then
   echo "==> Rewriting workload registry references to '${WORKLOAD_REGISTRY_HOST}'"
-  grep -rl "knr-registry" "$ARTIFACT_ROOT" | while IFS= read -r f; do
-    sed -i.bak "s|knr-registry|${WORKLOAD_REGISTRY_HOST}|g" "$f"
+  grep -rl "krops-registry" "$ARTIFACT_ROOT" | while IFS= read -r f; do
+    sed -i.bak "s|krops-registry|${WORKLOAD_REGISTRY_HOST}|g" "$f"
     rm -f "${f}.bak"
   done
 fi
@@ -334,7 +334,7 @@ fi
 flux push artifact "${PUSH_ARGS[@]}"
 
 # Keep a plain-directory copy of the tree in the bundle: the gap-side stage
-# script re-pushes it into knr-registry as knr-ops:latest for the workload
+# script re-pushes it into krops-registry as krops:latest for the workload
 # cluster's Flux (which does not talk to the Zarf registry).
 rm -rf "$REPO_ROOT/airgap/config-artifact"
 cp -R "$ARTIFACT_ROOT" "$REPO_ROOT/airgap/config-artifact"
