@@ -80,9 +80,10 @@ archives/ (node images, workload images,           v
 
 **Ownership split.** Zarf owns the *substrate* (internal registry, agent,
 cert-manager, the flux-operator chart, CAPI core + kubeadm bootstrap /
-control-plane + CAPD + CAAPH component manifests, and the krops config
-artifact). Flux owns the *workload definitions* (the CAPD cluster, the kindnet
-CNI addon, the per-cluster Flux addon), reconciled from the config artifact.
+control-plane + CAPD component manifests, the checksum-verified CAAPH release
+files, and the krops config artifact). Flux owns the *workload definitions*
+(the CAPD cluster, the kindnet CNI addon, the per-cluster Flux addon),
+reconciled from the config artifact.
 The `mgmt/` and `workload/` trees in git are **not** modified; the airgap
 variant is generated at build time by `build-config-artifact.sh`.
 
@@ -100,6 +101,7 @@ The verification linchpin is the agent's **image rewrite** plus a Ready
 |---|---|
 | `zarf` CLI binary | runs the deploy |
 | `archives/zarf-init-arm64.tar.zst` | `zarf init` (registry + agent); built by `zarf tools download-init` from the zarf CLI pinned in `mise.toml` and renamed at build time, so `mise.toml` stays the sole version declaration |
+| bundled `clusterctl` CLI binaries | render CAAPH's staged provider template at deploy time on macOS or Linux arm64 |
 | `zarf-package-krops-airgap-arm64-0.1.0.tar.zst` | signed package, including per-component Syft JSON/HTML SBOMs and the Sigstore signature bundle |
 | `archives/kindest_node_v1.37.0_mgmt.tar` | mgmt kind node (host daemon) |
 | `archives/kindest_node_v1.37.0.tar` | CAPD workload and management nodes (host daemon) |
@@ -110,7 +112,11 @@ The verification linchpin is the agent's **image rewrite** plus a Ready
 | `config-artifact/` | trimmed GitOps tree, re-pushed as `krops:latest` |
 
 The CI artifact excludes the `zarf` CLI; fetch it via mise or the Zarf release
-for the deploy host's target OS before crossing the gap.
+for the deploy host's target OS before crossing the gap. The package itself
+contains the matching arm64 `clusterctl` binary for macOS and Linux.
+CAAPH is applied by the deploy action rather than tracked as a Zarf manifest,
+so `zarf package remove` does not remove it; the supported teardown deletes the
+kind cluster that hosts it.
 
 ## Sequence
 
@@ -196,11 +202,13 @@ daemon): `CLUSTER_NAME`, `AIRGAP_CLUSTER_NAME`, `WORKLOAD_REGISTRY_HOST`,
 
 ## Empirical findings (why the package looks the way it does)
 
-1. **Captured CAPI provider components are clusterctl templates.** The
+1. **CAPI provider components are clusterctl templates.** The
    capi-operator substitutes `${VAR:=default}` placeholders and applies the
    provider-spec `--feature-gates=ClusterTopology=true` arg override at
    install. In the gap we are the operator, so
-   `scripts/substitute-components.sh` performs both steps up front.
+   `scripts/substitute-components.sh` performs both steps up front. CAAPH is
+   fetched by Zarf from pinned `v0.6.4` release assets, verified against their
+   SHA-256 checksums, then rendered by `clusterctl` during offline deployment.
 2. **`spec.distribution.artifact` must be omitted** from the FluxInstance.
    The operator fetches it at every reconcile and its fetcher has no
    insecure-registry option (verified: "http: server gave HTTP response to

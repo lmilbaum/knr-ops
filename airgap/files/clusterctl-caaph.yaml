@@ -1,0 +1,4 @@
+providers:
+  - name: helm
+    type: AddonProvider
+    url: /tmp/krops-airgap/caaph/addon-helm/v0.6.4/components.yaml

@@ -182,7 +182,7 @@ def main() -> int:
             {
                 path
                 for path in changed
-                if is_image_source(path)
+                if is_image_source(path) and (REPO_ROOT / path).is_file()
             }
         )
 
@@ -190,7 +190,11 @@ def main() -> int:
     seen = defaultdict(list)
 
     for relative in sorted(set(changed) - set(sources)):
-        if is_potential_image_source(relative) and contains_image_reference(relative):
+        if (
+            (REPO_ROOT / relative).is_file()
+            and is_potential_image_source(relative)
+            and contains_image_reference(relative)
+        ):
             failures.append(
                 f"{relative}: uncovered image-bearing source; register it in the gate"
             )
