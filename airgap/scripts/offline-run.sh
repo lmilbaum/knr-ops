@@ -122,7 +122,7 @@ else
 fi
 
 step "3. zarf init"
-if ( cd "$AIRGAP_DIR" && "$ZARF" init "$ARCHIVES/zarf-init-arm64-v0.83.0.tar.zst" \
+if ( cd "$AIRGAP_DIR" && "$ZARF" init "$ARCHIVES/zarf-init-arm64.tar.zst" \
        --registry-mode=nodeport --components="" --confirm ); then
   pass "zarf init"
 else

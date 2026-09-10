@@ -114,5 +114,5 @@ helm push "$ARCHIVES/charts/flux-operator-0.58.0.tgz" "oci://localhost:${REGISTR
 helm push "$ARCHIVES/charts/podinfo-6.14.0.tgz" "oci://localhost:${REGISTRY_PORT}/stefanprodan/charts" --plain-http
 
 echo ">>> Staged. Next:"
-echo "      zarf init archives/zarf-init-arm64-v0.83.0.tar.zst --registry-mode=nodeport --components=\"\" --confirm"
+echo "      zarf init archives/zarf-init-arm64.tar.zst --registry-mode=nodeport --components=\"\" --confirm"
 echo "      zarf package deploy zarf-package-krops-airgap-arm64-0.1.0.tar.zst --confirm"
