@@ -436,6 +436,12 @@
       "automerge": false
     },
     {
+      "description": "Group GitHub Actions only, excluding workflow images and runners",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["action"],
+      "groupName": "github-actions"
+    },
+    {
       "description": "Group Flux controller images and CLI updates",
       "matchDatasources": ["docker", "github-releases", "helm"],
       "matchPackageNames": [

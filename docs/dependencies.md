@@ -39,7 +39,8 @@ Renovate discovers and updates versions in:
   and grouped with `bootstrap.toml` and the Git manifests until the native
   shell path retires.
 
-Grouping rules keep Flux updates together, CAPI updates together, imperative
+Grouping rules keep GitHub Actions updates together (excluding workflow container
+images and runners), Flux updates together, CAPI updates together, imperative
 chart pins with their declarative counterparts, and node-version updates
 separate. Renovate proposes one PR at the newest available version for each
 dependency, rather than parallel major and non-major update PRs. Base images

@@ -67,6 +67,9 @@ jobs:
       - name: Install Renovate
         run: npm install --global renovate@44.69.8
 
+      - name: Verify only actions join the GitHub Actions group
+        run: python3 tests/test-renovate-actions-grouping.py
+
       - name: Verify airgap digest pinning
         env:
           RENOVATE_GITHUB_COM_TOKEN: ${{ github.token }}
