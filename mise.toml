@@ -27,7 +27,7 @@ env_file = ".env"
 description = "Check scripts and air-gap image pins, cross-check bootstrap config, and build every kustomize overlay"
 run = '''
 fail=0
-for script in bootstrap.sh bootstrap-common.sh pivot.sh teardown.sh; do
+for script in bootstrap.sh bootstrap-common.sh pivot.sh teardown.sh airgap/scripts/*.sh; do
   echo "==> bash -n $script"
   if ! bash -n "$script"; then
     echo "    FAILED: $script" >&2

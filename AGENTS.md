@@ -68,6 +68,10 @@ resources. There is no app source code here, only declarative infrastructure.
   `zarf.yaml` + `images.txt` define the packages; `scripts/` builds,
   renders, and stages the bundle (`build-*`, `render-*`, `stage-*`,
   `offline-run.sh`); `archives/` and `rendered/` are gitignored outputs.
+  Zarf fetches SHA-256-pinned CAAPH release assets and bundles arm64
+  `clusterctl`; its bounded deploy action renders and applies CAAPH from those
+  staged assets (the supported kind-cluster teardown, not `zarf package remove`,
+  removes those resources).
   Every build is signed and contains Zarf-generated per-component Syft SBOMs.
   `offline-run.sh` verifies the signature, checksums, and extracted SBOMs
   before staging; operator builds use `ZARF_SIGNING_KEY` / `ZARF_VERIFY_KEY`,
