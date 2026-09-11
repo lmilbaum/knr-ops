@@ -21,6 +21,7 @@
   "schedule": ["after 6am on monday"],
   "timezone": "Europe/Helsinki",
   "rangeStrategy": "pin",
+  "separateMajorMinor": false,
   "commitBody": "Refs: #74",
   "suppressNotifications": ["prEditedNotification", "prIgnoreNotification"],
   "rebaseWhen": "conflicted",
