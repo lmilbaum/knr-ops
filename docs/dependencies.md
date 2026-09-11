@@ -41,8 +41,10 @@ Renovate discovers and updates versions in:
 
 Grouping rules keep Flux updates together, CAPI updates together, imperative
 chart pins with their declarative counterparts, and node-version updates
-separate. Base images in `bootstrap-rs/Dockerfile` and air-gap images are
-digest-pinned while retaining readable tags. Nothing automerges.
+separate. Renovate proposes one PR at the newest available version for each
+dependency, rather than parallel major and non-major update PRs. Base images
+in `bootstrap-rs/Dockerfile` and air-gap images are digest-pinned while
+retaining readable tags. Nothing automerges.
 
 ## Toolbox release version
 
