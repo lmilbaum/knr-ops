@@ -203,7 +203,11 @@ discovered) and the digest-pinning test run in CI only (the validate.yml
 shared harness `tests/renovate_harness.py` (issue #97): a new Renovate test
 is a file list plus assertions, never a copy of the subprocess/parsing
 logic. The harness needs Node >= 24.11 (renovate's `engines` field);
-locally: `mise x node@24 -- python3 tests/test-renovate-coverage.py`. They
+locally: `mise x node@24 -- python3 tests/test-renovate-coverage.py`.
+The offline unit test `tests/test-renovate-actions-grouping.py` also runs in
+that CI job and uses the shared harness to apply Renovate’s real package-rule
+engine, checking that only action dependencies join the GitHub Actions group.
+Run locally with Renovate on PATH and Node >= 24.11. These tests
 do not cover lookup liveness or the replacement path; only the
 dry-run and the handlebars simulation cover those.
 

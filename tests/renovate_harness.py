@@ -147,3 +147,41 @@ def _parse(returncode, stdout, fixture_files):
                         package.get("deps", [])
                     )
     return result
+
+
+def apply_package_rules(dependencies, repo_root=REPO_ROOT):
+    """Apply the real config with Renovate's rule engine, offline (Node >=24.11).
+
+    Resolve modules beside the installed CLI so local and CI tests use the same
+    Renovate version without maintaining a second JavaScript dependency install.
+    """
+    executable = shutil.which("renovate")
+    if executable is None:
+        raise RuntimeError("renovate must be installed and on PATH")
+    renovate_root = Path(executable).resolve().parent.parent
+    script = r"""
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+const [root, configPath] = process.argv.slice(1);
+const require = createRequire(`${root}/package.json`);
+const JSON5 = require('json5');
+const { applyPackageRules } = await import(
+    pathToFileURL(`${root}/dist/util/package-rules/index.js`).href
+);
+const { packageRules } = JSON5.parse(fs.readFileSync(configPath, 'utf8'));
+const dependencies = JSON.parse(fs.readFileSync(0, 'utf8'));
+const results = [];
+for (const dependency of dependencies) {
+    const result = await applyPackageRules({ ...dependency, packageRules });
+    results.push({ groupName: result.groupName ?? null });
+}
+process.stdout.write(JSON.stringify(results));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script,
+         str(renovate_root), str(repo_root / "renovate.json5")],
+        input=json.dumps(dependencies), text=True, capture_output=True,
+        check=True, env={**os.environ, "LOG_LEVEL": "fatal"},
+    )
+    return json.loads(completed.stdout)
